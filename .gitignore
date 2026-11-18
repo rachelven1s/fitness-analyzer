@@ -1,0 +1,10 @@
+# Personal health data: never commit.
+data/
+public/generated/
+site/
+# Personal notes the build reads if present; see the *.example.json files for the format.
+events.json
+exclusions.json
+node_modules/
+.DS_Store
+.claude/settings.local.json

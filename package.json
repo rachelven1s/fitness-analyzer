@@ -1,0 +1,16 @@
+{
+  "name": "fitness-analyzer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A local-only visual story of exported fitness data",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "build:data": "node scripts/build-data.mjs",
+    "build:site": "node scripts/build-site.mjs",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

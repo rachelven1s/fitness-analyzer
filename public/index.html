@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fitness Analyzer</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">Fitness Analyzer</a>
+    <nav id="nav" aria-label="Chapters"></nav>
+    <div class="controls">
+      <button id="randomDay" type="button">🎲 Random day</button>
+      <button id="privateToggle" type="button" aria-pressed="false">Hide private</button>
+    </div>
+  </header>
+  <main id="app"><p class="loading">Reading your data…</p></main>
+  <dialog id="dayDialog" aria-labelledby="dayTitle"></dialog>
+  <div id="tooltip" role="status" hidden></div>
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

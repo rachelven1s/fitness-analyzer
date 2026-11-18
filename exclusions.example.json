@@ -1,0 +1,14 @@
+[
+  {
+    "from": "2024-05-01",
+    "to": "2024-05-10",
+    "kind": "not-worn",
+    "reason": "Watch left switched on but not worn"
+  },
+  {
+    "from": "2024-01-03",
+    "to": "2024-01-09",
+    "kind": "sick",
+    "reason": "Sick: the data stays in the record but is kept out of fitness trends"
+  }
+]
