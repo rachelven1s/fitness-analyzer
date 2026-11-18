@@ -955,7 +955,7 @@ for (const [date, r] of days) {
   for (const f of WRIST_FIELDS) delete r[f];
 }
 
-// ---------- weight: one reading per day across Fitbit, the Garmin biometrics file and the CSV exports ----------
+// ---------- weight: one reading per day across Fitbit and the Garmin biometrics file ----------
 
 const weightReadings = [];
 const fitbitWeight = readCsv(path.join(PA, 'Weight', 'weight.csv'));
@@ -965,32 +965,13 @@ for (const row of fitbitWeight) {
   if (g && d < HANDOVER) weightReadings.push({ date: d, lb: g / GRAMS_PER_LB, source: 'fitbit' });
 }
 let importedWeights = 0;
-let csvWeightRows = 0;
-for (const f of fs.readdirSync(DATA).filter((n) => /^Weight.*\.csv$/.test(n))) {
-  let current = null;
-  for (const line of readLines(path.join(DATA, f)).slice(1)) {
-    const cols = parseCsvText(line)[0] || [];
-    if (cols.length === 1) {
-      const t = Date.parse(`${cols[0]} UTC`);
-      current = Number.isFinite(t) ? isoDay(t) : null;
-      continue;
-    }
-    if (!current) continue; // a dateless row exists only in the single-row "Weight.csv" export
-    const lb = parseFloat(cols[1]);
-    if (!Number.isFinite(lb)) continue;
-    csvWeightRows++;
-    if (isImportedGarminWeight(current, cols[0], HANDOVER)) { importedWeights++; continue; }
-    weightReadings.push({ date: current, lb, source: 'garmin-csv' });
-  }
-}
 let bioWeightRows = 0;
 const bioFile = listFiles(GWELL, (f) => f.endsWith('_userBioMetrics.json'))[0];
 for (const b of readJson(bioFile)) {
   if (!b.weight?.weight) continue;
   bioWeightRows++;
   const date = b.metaData.calendarDate.slice(0, 10);
-  // Imports carry a midnight-GMT stamp, which is what the CSV shows as 7 or 8 PM.
-  if (date < HANDOVER && /T00:00:00/.test(b.weight.timestampGMT)) continue;
+  if (isImportedGarminWeight(date, b.weight.timestampGMT, HANDOVER)) { importedWeights++; continue; }
   weightReadings.push({ date, lb: Math.round((b.weight.weight / GRAMS_PER_LB) * 10) / 10, source: 'garmin-bio' });
 }
 const weight = mergeWeights(weightReadings).map(({ date, lb }) => {
@@ -998,7 +979,7 @@ const weight = mergeWeights(weightReadings).map(({ date, lb }) => {
   cover('Weight', dayOwner(date, HANDOVER), date);
   return { d: date, lb: round(lb, 1) };
 });
-log(`weight days ${weight.length}; rows fitbit ${fitbitWeight.length}, csv ${csvWeightRows}, biometrics ${bioWeightRows}; imports dropped ${importedWeights}`);
+log(`weight days ${weight.length}; rows fitbit ${fitbitWeight.length}, biometrics ${bioWeightRows}; imports dropped ${importedWeights}`);
 
 // ---------- food and hydration ----------
 
@@ -1521,7 +1502,7 @@ const summary = {
       },
       weight: {
         days: weight.length,
-        rows: { fitbit: fitbitWeight.length, csv: csvWeightRows, biometrics: bioWeightRows },
+        rows: { fitbit: fitbitWeight.length, biometrics: bioWeightRows },
         imports: importedWeights,
       },
       cycles: { fitbit: fitbitCycles.length, garmin: garminCycles.length, merged: cycleList.length },

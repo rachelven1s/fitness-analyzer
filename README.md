@@ -13,7 +13,7 @@ SITE_PASSWORD=... npm run build:site   # a password-gated copy in site/ for host
 
 Needs Node 18 or newer and has no dependencies. FIT and zip files are read by small parsers in `scripts/lib/`.
 
-Expected layout: `data/Takeout/`, `data/garmin*/`, `data/strava*/` and any `data/Weight*.csv` downloads from Garmin.
+Expected layout: `data/Takeout/`, `data/garmin*/` and `data/strava*/`.
 
 Optional, both git-ignored: `events.json` marks life events on the charts, and `exclusions.json` lists days the watch wasn't worn or you were sick. Copy `events.example.json` and `exclusions.example.json` to start.
 

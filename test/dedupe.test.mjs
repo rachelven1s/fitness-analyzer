@@ -123,10 +123,10 @@ test('readings repeated across exports count once per day', () => {
 });
 
 test('imported Garmin rows are dropped only before the watch arrived', () => {
-  assert.equal(isImportedGarminWeight('2022-05-01', '8:00 PM', '2022-06-04'), true);
-  assert.equal(isImportedGarminWeight('2021-01-01', '7:00 PM', '2022-06-04'), true);
-  assert.equal(isImportedGarminWeight('2022-05-01', '9:14 AM', '2022-06-04'), false);
-  assert.equal(isImportedGarminWeight('2025-01-01', '8:00 PM', '2022-06-04'), false);
+  assert.equal(isImportedGarminWeight('2022-05-01', '2022-05-02T00:00:00.0', '2022-06-04'), true);
+  assert.equal(isImportedGarminWeight('2021-01-01', '2021-01-01T00:00:00.0', '2022-06-04'), true);
+  assert.equal(isImportedGarminWeight('2022-05-01', '2022-05-01T13:14:01.1', '2022-06-04'), false);
+  assert.equal(isImportedGarminWeight('2025-01-01', '2025-01-02T00:00:00.0', '2022-06-04'), false);
 });
 
 test('cycles from two apps within a few days are one cycle, and a confirmed record wins', () => {

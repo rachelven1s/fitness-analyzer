@@ -148,8 +148,8 @@ export function mergeCluster(cluster) {
 // ---------- weight ----------
 
 // Before the watch arrived, Garmin held rows imported from Fitbit: a default of 120 lb filled in daily,
-// plus real values moved a day early and gaps interpolated. All sit at midnight GMT, shown as 7 or 8 PM.
-export const isImportedGarminWeight = (date, clock, handover) => date < handover && /^[78]:00 PM$/.test(clock);
+// plus real values moved a day early and gaps interpolated. All are stamped exactly midnight GMT.
+export const isImportedGarminWeight = (date, timestampGMT, handover) => date < handover && /T00:00:00/.test(timestampGMT);
 
 export function mergeWeights(readings) {
   const byDay = new Map();
