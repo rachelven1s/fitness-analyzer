@@ -103,7 +103,7 @@ export async function open(folder, dir, platform) {
         const zip = await openZip(await folder.reader(zipFile), platform.inflateRaw, zipFile);
         let done = 0;
         for (const entry of zip.entries) {
-          if (++done % 2000 === 0) ctx.progress(`Garmin activity and monitoring files, archive ${i + 1} of ${zipFiles.length}`, done / zip.entries.length);
+          if (++done % 2000 === 0) ctx.progress(`Reading Garmin's activity and all-day files, part ${i + 1} of ${zipFiles.length}`, (i + done / zip.entries.length) / zipFiles.length);
           if (!entry.name.endsWith('.fit')) { fitFiles.ignoredFitbitCsv++; continue; } // other trackers' files re-uploaded to Garmin
           const buf = await zip.read(entry);
           let type = null;

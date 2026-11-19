@@ -463,3 +463,16 @@ dialog#dayDialog::backdrop { background: rgba(0, 0, 0, 0.5); }
 .pace-table td.shaded .cell-sub { color: var(--ink-2); }
 .pace-table td.on-dark, .pace-table td.on-dark .cell-sub { color: #fff; }
 .pace-table td.on-dark .cell-sub { opacity: 0.85; }
+
+/* Importing a Garmin export in the browser, on its own or from the password screen. */
+.lock .link-button { padding: 0; border: 0; background: none; color: var(--accent-ink); text-decoration: underline; text-underline-offset: 2px; }
+.lock .lock-alt { margin-top: 8px; }
+.import { max-width: 440px; }
+.drop-zone { display: grid; gap: 6px; justify-items: center; padding: 28px 16px; border: 2px dashed var(--axis); border-radius: 12px; background: var(--surface); }
+.drop-zone[hidden] { display: none; }
+.drop-zone.over { border-color: var(--accent); background: var(--accent-wash); }
+.drop-zone span { color: var(--muted); font-size: 13px; }
+.drop-zone button { margin-top: 6px; }
+.import-progress { width: 100%; height: 8px; accent-color: var(--accent); }
+.import .import-status:empty, .import .lock-error:empty { display: none; }
+.import .import-note { font-size: 13px; color: var(--muted); }

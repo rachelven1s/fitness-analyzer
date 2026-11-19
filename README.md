@@ -7,13 +7,15 @@ The main chapters and year-over-year comparisons use only the Garmin years, when
 ```sh
 npm start            # http://127.0.0.1:4173 (builds the data on first run, about 10 seconds)
 npm run build:data   # rebuild after changing anything in data/
-npm test             # the deduplication rules
+npm test             # the deduplication rules, zip and FIT readers
 SITE_PASSWORD=... npm run build:site   # a password-gated copy in site/ for hosting
 ```
 
 Needs Node 18 or newer and has no dependencies. FIT and zip files are read by small parsers in `public/js/engine/lib/`; the analysis in `public/js/engine/` runs in Node (`npm run build:data`) and in the browser.
 
 Expected layout: `data/Takeout/`, `data/garmin*/` and `data/strava*/`.
+
+**Someone else's Garmin data:** open `/?import` (or the link on the password screen of the hosted copy) and drop the `.zip` from Garmin's "Export Your Data". The same analysis runs in the browser (`public/js/import-worker.js`); the zip is never uploaded, and the result is kept in that browser's IndexedDB until "Clear imported data". Imports have no `events.json` or `exclusions.json`.
 
 Optional, both git-ignored: `events.json` marks life events on the charts, and `exclusions.json` lists days the watch wasn't worn or you were sick. Copy `events.example.json` and `exclusions.example.json` to start.
 

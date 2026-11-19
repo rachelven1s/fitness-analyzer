@@ -4,6 +4,7 @@ import {
   rampTable, rampCss, showTip, hideTip, tipRow, linear, howMeasured, renderLegend,
 } from './lib.js';
 import { lineChart, columnChart, hBars, scatter, raster, cellGrid } from './charts.js';
+import { saveImported, loadImported, clearImported } from './imported.js';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -47,6 +48,9 @@ const toned = (node, tone) => { node.dataset.tone = tone; return node; };
 let data;
 let byDate;
 let intradayPromise;
+// An export imported in this browser ({ summary, intraday, avatarUrl, fileName }), or null when the data
+// comes from the generated files.
+let imported = null;
 
 const row = (date) => byDate.get(date);
 const handover = () => data.meta.handover;
@@ -240,7 +244,7 @@ function renderHero() {
   const sum = (list, get) => list.reduce((s, x) => s + (get(x) || 0), 0);
   return el('div', { id: 'top' },
     el('div', { class: 'hero' },
-      data.meta.avatar ? el('img', { class: 'avatar', src: `${dataDir}/profile.jpg`, alt: 'Your Strava profile picture' }) : null,
+      data.meta.avatar ? el('img', { class: 'avatar', src: imported ? imported.avatarUrl : `${dataDir}/profile.jpg`, alt: 'Your Strava profile picture' }) : null,
       el('div', null,
         el('div', { class: 'eyebrow', text: `💓 Since ${fmtDay(handover())} · your Garmin years` }),
         el('h1', null, el('span', { class: 'hero-number', text: `${millions} million` }), ' heartbeats'),
@@ -2705,7 +2709,7 @@ async function renderDay(dialog, date) {
   if (night) drawNightStrip(stageHost, night, dialog, t);
   if (date > data.meta.trackerEnd || date < data.meta.trackerStart) return;
 
-  intradayPromise ||= fetch(`${dataDir}/intraday.json`).then((res) => res.json());
+  intradayPromise ||= imported ? Promise.resolve(imported.intraday) : fetch(`${dataDir}/intraday.json`).then((res) => res.json());
   const intraday = await intradayPromise;
   // The user may have moved on while the file was loading.
   if (dialog.querySelector('#dayTitle')?.textContent !== fmtFullDay(date)) return;
@@ -2995,6 +2999,20 @@ function setupControls() {
 
   document.getElementById('randomDay').addEventListener('click', randomDay);
   document.getElementById('dayDialog').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+
+  // Imported data stays in this browser until cleared; clearing goes back to the normal start screen.
+  if (imported) {
+    privateBtn.after(el('button', {
+      type: 'button',
+      text: 'Clear imported data',
+      title: `Showing ${imported.fileName}, imported ${fmtDay(imported.importedAt.slice(0, 10))}. Removes it from this browser.`,
+      onclick: async () => {
+        if (!confirm('Remove the imported data from this browser?')) return;
+        await clearImported();
+        location.href = '/';
+      },
+    }));
+  }
 }
 
 // The hosted copy (npm run build:site) keeps the data in a folder named after the password's hash,
@@ -3021,7 +3039,13 @@ function unlock(app) {
       el('p', { text: 'Enter the password to continue.' }),
       input,
       el('button', { type: 'submit', text: 'Unlock' }),
-      error);
+      error,
+      el('p', { class: 'lock-alt' }, 'Or ', el('button', {
+        type: 'button',
+        class: 'link-button',
+        text: 'see your own Garmin data',
+        onclick: () => importScreen(app, { back: show }).then(resolve),
+      }), '.'));
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       error.textContent = '';
@@ -3040,21 +3064,121 @@ function unlock(app) {
   });
 }
 
+// Builds the site from a visitor's own Garmin export, in this browser (import-worker.js), and keeps the result
+// here (imported.js). Resolves with the imported record. `back`, when given, returns to the previous screen.
+function importScreen(app, { intro, back } = {}) {
+  return new Promise((resolve) => {
+    let worker = null;
+    const input = el('input', { type: 'file', accept: '.zip,application/zip', hidden: true });
+    const choose = el('button', { type: 'button', text: 'Choose the zip', onclick: () => input.click() });
+    const drop = el('div', { class: 'drop-zone' }, el('strong', { text: 'Drop your Garmin export here' }), el('span', { text: 'the .zip file, as Garmin sent it' }), choose, input);
+    const bar = el('progress', { class: 'import-progress', max: 1, hidden: true });
+    const status = el('p', { class: 'import-status', role: 'status' });
+    const error = el('p', { class: 'lock-error', role: 'alert' });
+    const cancel = el('button', { type: 'button', class: 'link-button', text: 'Cancel', hidden: true });
+
+    function stop() {
+      worker?.terminate();
+      worker = null;
+      input.value = '';
+      drop.hidden = false;
+      bar.hidden = true;
+      cancel.hidden = true;
+      status.textContent = '';
+    }
+    function start(file) {
+      if (!file) return;
+      if (!/\.zip$/i.test(file.name)) {
+        error.textContent = `${file.name} isn't a .zip file. Choose the zip from Garmin's export email.`;
+        return;
+      }
+      error.textContent = '';
+      drop.hidden = true;
+      bar.hidden = false;
+      bar.removeAttribute('value');
+      cancel.hidden = false;
+      status.textContent = 'Opening the zip';
+      worker = new Worker(new URL('./import-worker.js', import.meta.url), { type: 'module' });
+      worker.onmessage = async ({ data: msg }) => {
+        if (msg.type === 'progress') {
+          status.textContent = msg.label;
+          if (msg.share == null) bar.removeAttribute('value');
+          else bar.value = msg.share;
+        } else if (msg.type === 'error') {
+          stop();
+          error.textContent = `Couldn't read that export: ${msg.message}`;
+        } else if (msg.type === 'done') {
+          worker.terminate();
+          worker = null;
+          status.textContent = 'Saving in this browser';
+          const record = { summary: msg.summary, intraday: msg.intraday, avatar: msg.avatar, fileName: file.name, importedAt: new Date().toISOString() };
+          await saveImported(record);
+          resolve(record);
+        }
+      };
+      worker.onerror = (e) => {
+        stop();
+        error.textContent = `Couldn't read that export: ${e.message || 'the import stopped'}.`;
+      };
+      worker.postMessage({ file });
+    }
+
+    cancel.addEventListener('click', stop);
+    input.addEventListener('change', () => start(input.files[0]));
+    drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+    drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+    drop.addEventListener('drop', (e) => {
+      e.preventDefault();
+      drop.classList.remove('over');
+      start(e.dataTransfer.files[0]);
+    });
+    // Like the password screen, the import screen has no data behind it yet, so the top bar's buttons are hidden.
+    document.documentElement.setAttribute('data-locked', '');
+    app.replaceChildren(el('div', { class: 'lock import' },
+      el('h1', { text: 'See your own Garmin data' }),
+      intro ? el('p', { text: intro }) : null,
+      el('p', { text: 'In your Garmin account, open Data Management, then Export Your Data. Garmin emails you a link to a .zip file.' }),
+      drop,
+      bar,
+      status,
+      cancel,
+      error,
+      el('p', { class: 'import-note', text: 'The zip is read on this device and never uploaded. A few years of data takes a minute or two. The result is kept in this browser until you clear it.' }),
+      back ? el('button', { type: 'button', class: 'link-button', text: '← Back', onclick: () => { stop(); back(); } }) : null));
+  });
+}
+
+function useImported(record) {
+  imported = { ...record, avatarUrl: record.avatar ? URL.createObjectURL(new Blob([record.avatar], { type: 'image/jpeg' })) : null };
+  data = record.summary;
+}
+
 async function main() {
   const app = document.getElementById('app');
-  if (document.documentElement.hasAttribute('data-locked')) {
-    dataDir = await unlock(app);
-    document.documentElement.removeAttribute('data-locked');
-    app.replaceChildren(el('p', { class: 'loading', text: 'Reading your data…' }));
+  const locked = document.documentElement.hasAttribute('data-locked');
+  // An earlier import in this browser comes first; /?import opens the import screen directly.
+  const saved = await loadImported();
+  if (saved) useImported(saved);
+  else if (new URLSearchParams(location.search).has('import')) {
+    useImported(await importScreen(app));
+    history.replaceState(null, '', location.pathname + location.hash);
+  } else if (locked) {
+    const unlocked = await unlock(app);
+    if (typeof unlocked === 'string') dataDir = unlocked;
+    else useImported(unlocked);
   }
-  try {
-    const res = await fetch(`${dataDir}/summary.json`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    data = await res.json();
-  } catch (err) {
-    app.replaceChildren(el('p', { class: 'loading', text: `Couldn't load the generated data (${err.message}). Run "npm run build:data", then reload.` }));
-    return;
+  app.replaceChildren(el('p', { class: 'loading', text: 'Reading your data…' }));
+  if (!imported) {
+    try {
+      const res = await fetch(`${dataDir}/summary.json`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      data = await res.json();
+    } catch (err) {
+      // Before the first build, offer an import instead.
+      useImported(await importScreen(app, { intro: `No generated data yet (${err.message}). Run "npm run build:data" to build it from ./data, or import a Garmin export here.` }));
+    }
   }
+  document.documentElement.removeAttribute('data-locked');
   byDate = indexDaily(data.daily);
   const renderers = {
     compare: renderCompare,
