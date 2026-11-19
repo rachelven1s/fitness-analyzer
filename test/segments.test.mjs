@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { segmentRun, minuteBins, summarize } from '../scripts/lib/segments.mjs';
+import { segmentRun, minuteBins, summarize } from '../public/js/engine/lib/segments.js';
 
 // Builds a run from [minutes, km/h, heart rate] pieces, one record every 5 seconds.
 function makeRun(pieces) {

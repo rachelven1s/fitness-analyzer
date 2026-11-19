@@ -1,8 +1,6 @@
 // Fitbit, from a Google Takeout export: data/Takeout/Google Health.
-import fs from 'node:fs';
-import path from 'node:path';
-import { readCsv, readAll, listCsv, readLines } from '../lib/files.mjs';
-import { normalizeType, isIndoorRun } from '../lib/dedupe.mjs';
+import { readCsv, readAll, listCsv, readLines, join, basename } from '../lib/files.js';
+import { normalizeType, isIndoorRun } from '../lib/dedupe.js';
 
 const MIN = 60e3;
 const DAY = 86400e3;
@@ -26,35 +24,35 @@ const offsetHours = (s) => {
 const isoDay = (t) => new Date(t).toISOString().slice(0, 10);
 const dayDiff = (a, b) => Math.round((ms(`${b}T00:00:00Z`) - ms(`${a}T00:00:00Z`)) / DAY);
 
-export function detect(dataDir) {
-  const dir = path.join(dataDir, 'Takeout', 'Google Health');
-  return fs.existsSync(path.join(dir, 'Physical Activity_GoogleData')) ? dir : null;
+export function detect(folder) {
+  const dir = join('Takeout', 'Google Health');
+  return folder.isDir(join(dir, 'Physical Activity_GoogleData')) ? dir : null;
 }
 
-export function open(dir) {
-  const PA = path.join(dir, 'Physical Activity_GoogleData');
-  const HF = path.join(dir, 'Health Fitness Data_GoogleData');
-  const sleepStages = readAll(HF, 'UserSleepStages_');
+export async function open(folder, dir) {
+  const PA = join(dir, 'Physical Activity_GoogleData');
+  const HF = join(dir, 'Health Fitness Data_GoogleData');
+  const sleepStages = await readAll(folder, HF, 'UserSleepStages_');
   const offsets = new Map();
   for (const s of sleepStages) {
     const o = offsetHours(s.start_utc_offset);
     if (o != null) offsets.set(s.sleep_stage_start.slice(0, 10), o);
   }
-  const hrFiles = listCsv(path.join(PA, 'Heart Rate'), 'heart_rate_');
-  const firstDay = [...offsets.keys(), ...hrFiles.map((f) => /(\d{4}-\d{2}-\d{2})/.exec(path.basename(f))?.[1]).filter(Boolean)].sort()[0];
+  const hrFiles = listCsv(folder, join(PA, 'Heart Rate'), 'heart_rate_');
+  const firstDay = [...offsets.keys(), ...hrFiles.map((f) => /(\d{4}-\d{2}-\d{2})/.exec(basename(f))?.[1]).filter(Boolean)].sort()[0];
   const source = {
     id: 'fitbit',
     label: 'Fitbit',
     kind: 'watch',
     firstDay,
     offsets,
-    read(ctx) {
+    async read(ctx) {
       const { toLocal, dateOfLocal, owns } = ctx;
       const eraEndMs = ctx.era.to ? ms(`${ctx.era.to}T00:00:00Z`) : Infinity;
 
       let lastHr = -Infinity;
       for (const file of hrFiles) {
-        const lines = readLines(file);
+        const lines = await readLines(folder, file);
         for (let i = 1; i < lines.length; i++) {
           const comma = lines[i].indexOf(',');
           const t = Date.parse(lines[i].slice(0, comma));
@@ -78,7 +76,7 @@ export function open(dir) {
       const stepMinute = new Map();
       const distMinute = new Map();
       let droppedStepRows = 0;
-      for (const row of readAll(path.join(PA, 'Steps'), 'steps_')) {
+      for (const row of await readAll(folder, join(PA, 'Steps'), 'steps_')) {
         if (row['data source'] === APP_ROWS) { droppedStepRows++; continue; }
         const t = ms(row.timestamp);
         const steps = num(row.steps);
@@ -91,7 +89,7 @@ export function open(dir) {
         ctx.steps(t, steps);
       }
       ctx.note('droppedStepRows', droppedStepRows);
-      for (const row of readAll(path.join(PA, 'Distance'), 'distance_')) {
+      for (const row of await readAll(folder, join(PA, 'Distance'), 'distance_')) {
         if (row['data source'] === APP_ROWS) continue;
         const t = ms(row.timestamp);
         const metres = num(row.distance);
@@ -103,7 +101,7 @@ export function open(dir) {
         r.distM = (r.distM || 0) + metres;
       }
 
-      for (const row of readAll(path.join(PA, 'Active Minutes'), 'active_minutes_')) {
+      for (const row of await readAll(folder, join(PA, 'Active Minutes'), 'active_minutes_')) {
         const date = dateOfLocal(toLocal(ms(row.timestamp)));
         if (!owns(date)) continue; // later rows are back-filled from synced workouts
         const r = dayOf(date);
@@ -111,8 +109,8 @@ export function open(dir) {
       }
       // Before the tracker's first heart-rate reading and after it stops, this file is a flat basal estimate.
       const trackerStartMs = ctx.firstHrMs();
-      for (const file of listCsv(path.join(PA, 'Calories'), 'calories_')) {
-        const lines = readLines(file);
+      for (const file of listCsv(folder, join(PA, 'Calories'), 'calories_')) {
+        const lines = await readLines(folder, file);
         for (let i = 1; i < lines.length; i++) {
           const [ts, v] = lines[i].split(',');
           const t = Date.parse(ts);
@@ -123,12 +121,12 @@ export function open(dir) {
           r.cal = (r.cal || 0) + (parseFloat(v) || 0);
         }
       }
-      for (const row of readCsv(path.join(PA, 'Daily Resting Heart Rate', 'daily_resting_heart_rate.csv'))) {
+      for (const row of await readCsv(folder, join(PA, 'Daily Resting Heart Rate', 'daily_resting_heart_rate.csv'))) {
         const v = num(row['beats per minute']);
         if (v) dayOf(row.timestamp.slice(0, 10)).rhr = round(v, 1);
       }
       for (const [date, fields] of daily) ctx.day(date, fields);
-      for (const row of readCsv(path.join(PA, 'Demographic Vo2max', 'demographic_vo2max.csv'))) {
+      for (const row of await readCsv(folder, join(PA, 'Demographic Vo2max', 'demographic_vo2max.csv'))) {
         const v = num(row['demographic vo2max']);
         if (v) ctx.estimate(row.timestamp.slice(0, 10), { vo2: round(v, 1) });
       }
@@ -139,10 +137,10 @@ export function open(dir) {
         if (!stagesBySleep.has(s.sleep_id)) stagesBySleep.set(s.sleep_id, []);
         stagesBySleep.get(s.sleep_id).push(s);
       }
-      const scoreBySleep = new Map(readAll(HF, 'UserSleepScores_').map((s) => [s.sleep_id, s]));
+      const scoreBySleep = new Map((await readAll(folder, HF, 'UserSleepScores_')).map((s) => [s.sleep_id, s]));
       const byDate = new Map();
       const scoreCheck = [];
-      for (const session of readAll(HF, 'UserSleeps_')) {
+      for (const session of await readAll(folder, HF, 'UserSleeps_')) {
         const stages = stagesBySleep.get(session.sleep_id);
         if (!stages?.length) continue;
         const parsed = stages.map((s) => {
@@ -172,7 +170,7 @@ export function open(dir) {
 
       // Workouts. Before the switch, a workout without its own heart rate takes it from the all-day record.
       let swimWorkouts = 0;
-      for (const e of readAll(HF, 'UserExercises_')) {
+      for (const e of await readAll(folder, HF, 'UserExercises_')) {
         const start = ms(e.exercise_start);
         const end = ms(e.exercise_end);
         const own = offsetHours(e.utc_offset);
@@ -209,9 +207,9 @@ export function open(dir) {
         });
       }
       ctx.note('swimWorkouts', swimWorkouts);
-      ctx.note('swimLaps', readAll(path.join(PA, 'Swim Lengths Data'), 'swim_lengths_data_').length);
+      ctx.note('swimLaps', (await readAll(folder, join(PA, 'Swim Lengths Data'), 'swim_lengths_data_')).length);
 
-      const weightRows = readCsv(path.join(PA, 'Weight', 'weight.csv'));
+      const weightRows = await readCsv(folder, join(PA, 'Weight', 'weight.csv'));
       for (const row of weightRows) {
         const g = num(row['weight grams']);
         const d = row.timestamp.slice(0, 10);
@@ -219,7 +217,7 @@ export function open(dir) {
       }
       ctx.note('weightRows', weightRows.length);
 
-      for (const row of readCsv(path.join(PA, 'Nutrition Log', 'nutrition_log.csv'))) {
+      for (const row of await readCsv(folder, join(PA, 'Nutrition Log', 'nutrition_log.csv'))) {
         const nutrient = {};
         for (const part of row.nutrients.split(';')) {
           const [k, v] = part.split(':');
@@ -229,12 +227,12 @@ export function open(dir) {
         // Times are local midnight stored in UTC, so the leading date is the logged local date.
         ctx.food({ date: row['start time'].slice(0, 10), name: row['food name'].trim(), meal: row['meal type'], protein: nutrient.PROTEIN || 0, fiber: nutrient.DIETARY_FIBER || 0, sugar: nutrient.SUGAR || 0 });
       }
-      for (const row of readAll(path.join(PA, 'Hydration Log'), 'hydration_log_')) {
+      for (const row of await readAll(folder, join(PA, 'Hydration Log'), 'hydration_log_')) {
         const amount = parseFloat(row['amount consumed']);
         if (Number.isFinite(amount)) ctx.drink(row['start time'].slice(0, 10), amount);
       }
 
-      for (const c of readCsv(path.join(PA, 'Menstrual Cycle', 'menstrual_cycle.csv'))) {
+      for (const c of await readCsv(folder, join(PA, 'Menstrual Cycle', 'menstrual_cycle.csv'))) {
         ctx.cycle({
           start: c['start date'],
           len: dayDiff(c['start date'], c['end date']),
@@ -243,13 +241,13 @@ export function open(dir) {
           period: c['confirmed menstrual period'] ? dayDiff(...c['confirmed menstrual period'].split(' to ')) + 1 : null,
         });
       }
-      const birthControl = readCsv(path.join(PA, 'Birth Control', 'birth_control.csv'))[0];
+      const birthControl = (await readCsv(folder, join(PA, 'Birth Control', 'birth_control.csv')))[0];
       if (birthControl) ctx.birthControl(birthControl.timestamp.slice(0, 10));
 
       // Phone GPS, split into separate outings at gaps over five minutes. Where the phone and tracker both
       // logged a second, the phone's point is kept.
       const points = new Map();
-      for (const row of readAll(path.join(PA, 'Gps Location'), 'gps_location_')) {
+      for (const row of await readAll(folder, join(PA, 'Gps Location'), 'gps_location_')) {
         const lat = num(row.latitude);
         const lon = num(row.longitude);
         if (lat == null || lon == null) continue;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   sameEvent, clusterActivities, mergeCluster, matchSyncedCopies, mergeWeights, mergeCycles,
   isImportedGarminWeight, normalizeType, dayOwner,
-} from '../scripts/lib/dedupe.mjs';
+} from '../public/js/engine/lib/dedupe.js';
 
 const MIN = 60e3;
 const T0 = Date.UTC(2025, 5, 4, 12, 48);
@@ -154,7 +154,7 @@ test('activity types from all three exports normalize together', () => {
 });
 
 test('excluded stretches drop the days inside them and the nights that end inside them', async () => {
-  const { makeExclusions } = await import('../scripts/lib/exclusions.mjs');
+  const { makeExclusions } = await import('../public/js/engine/lib/exclusions.js');
   const ex = makeExclusions([{ from: '2026-05-08', to: '2026-05-25' }]);
   assert.equal(ex.day('2026-05-07'), false);
   assert.equal(ex.day('2026-05-08'), true);
@@ -168,7 +168,7 @@ test('excluded stretches drop the days inside them and the nights that end insid
 });
 
 test('sick days are flagged but not treated as unworn', async () => {
-  const { makeExclusions } = await import('../scripts/lib/exclusions.mjs');
+  const { makeExclusions } = await import('../public/js/engine/lib/exclusions.js');
   const ex = makeExclusions([{ from: '2026-01-03', to: '2026-01-12', kind: 'sick' }, { from: '2026-05-08', to: '2026-05-25' }]);
   assert.equal(ex.sick('2026-01-05'), true);
   assert.equal(ex.sick('2026-01-13'), false);

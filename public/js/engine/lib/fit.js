@@ -16,25 +16,32 @@ const BASE = {
   0x8e: [8, 'skip', null], 0x8f: [8, 'skip', null], 0x90: [8, 'skip', null],
 };
 
-function readValue(buf, at, kind, little) {
+// A read past the end throws a RangeError, which decodeFit treats as a truncated file; a single byte past
+// the end reads as undefined instead.
+function readValue(dv, at, kind, little) {
   switch (kind) {
-    case 'u8': return buf[at];
-    case 'i8': return buf.readInt8(at);
-    case 'i16': return little ? buf.readInt16LE(at) : buf.readInt16BE(at);
-    case 'u16': return little ? buf.readUInt16LE(at) : buf.readUInt16BE(at);
-    case 'i32': return little ? buf.readInt32LE(at) : buf.readInt32BE(at);
-    case 'u32': return little ? buf.readUInt32LE(at) : buf.readUInt32BE(at);
-    case 'f32': return little ? buf.readFloatLE(at) : buf.readFloatBE(at);
-    case 'f64': return little ? buf.readDoubleLE(at) : buf.readDoubleBE(at);
+    case 'u8': return at < dv.byteLength ? dv.getUint8(at) : undefined;
+    case 'i8': return dv.getInt8(at);
+    case 'i16': return dv.getInt16(at, little);
+    case 'u16': return dv.getUint16(at, little);
+    case 'i32': return dv.getInt32(at, little);
+    case 'u32': return dv.getUint32(at, little);
+    case 'f32': return dv.getFloat32(at, little);
+    case 'f64': return dv.getFloat64(at, little);
     default: return null;
   }
 }
 
-// onMessage(globalNum, fields, timestampFromCompressedHeader) lets callers skip retaining huge files.
+const utf8 = new TextDecoder('utf-8');
+// '.FIT' at bytes 8 to 11.
+const isFit = (buf) => buf.length >= 12 && buf[8] === 0x2e && buf[9] === 0x46 && buf[10] === 0x49 && buf[11] === 0x54;
+
+// buf is a Uint8Array. onMessage(globalNum, fields, timestampFromCompressedHeader) lets callers skip retaining huge files.
 export function decodeFit(buf, onMessage, wanted) {
-  if (buf.length < 12 || buf.toString('latin1', 8, 12) !== '.FIT') return false;
+  if (!isFit(buf)) return false;
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const headerSize = buf[0];
-  const dataSize = buf.readUInt32LE(4);
+  const dataSize = dv.getUint32(4, true);
   const end = Math.min(buf.length, headerSize + dataSize);
   const defs = new Map();
   let p = headerSize;
@@ -57,7 +64,7 @@ export function decodeFit(buf, onMessage, wanted) {
         const local = header & 0x0f;
         const hasDev = header & 0x20;
         const little = buf[p + 1] === 0;
-        const global = little ? buf.readUInt16LE(p + 2) : buf.readUInt16BE(p + 2);
+        const global = dv.getUint16(p + 2, little);
         const n = buf[p + 4];
         p += 5;
         const fields = [];
@@ -93,16 +100,16 @@ export function decodeFit(buf, onMessage, wanted) {
       if (base && base[1] !== 'skip') {
         const [width, kind, invalid] = base;
         if (kind === 'str') {
-          const raw = buf.toString('utf8', at, at + f.size);
+          const raw = utf8.decode(buf.subarray(at, at + f.size));
           const zero = raw.indexOf('\0');
           out[f.num] = zero >= 0 ? raw.slice(0, zero) : raw;
         } else if (f.size === width) {
-          const v = readValue(buf, at, kind, def.little);
+          const v = readValue(dv, at, kind, def.little);
           if (v !== invalid) out[f.num] = v;
         } else if (width && f.size % width === 0) {
           const list = [];
           for (let i = 0; i < f.size / width; i++) {
-            const v = readValue(buf, at + i * width, kind, def.little);
+            const v = readValue(dv, at + i * width, kind, def.little);
             list.push(v === invalid ? null : v);
           }
           out[f.num] = list;

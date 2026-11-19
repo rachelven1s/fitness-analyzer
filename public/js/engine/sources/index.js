@@ -1,8 +1,12 @@
 // Every export is read by one source module. A source turns its export's own files into the device-neutral
-// records below, so the analysis in build-data.mjs never touches an export's layout. Supporting another
+// records below, so the analysis in build.js never touches an export's layout. Supporting another
 // watch brand means adding a module here that pushes the same records.
 //
-// A module exports `detect(dataDir)`, returning the export's folder or null, and `open(folder)`, returning:
+// Files are read through a folder (see lib/files.js), which is a folder on disk or a zip in the browser.
+// A module exports `detect(folder)`, returning the path of its export inside the folder or null, and
+// `open(folder, dir, platform)`, returning a Promise of the source below. `platform` decompresses:
+// inflateRaw(bytes) and gunzip(bytes), each returning bytes or a Promise of them.
+//
 //
 //   id, label           'garmin', 'Garmin'. The id is also the source tag on every record.
 //   kind                'watch': worn all day. Each calendar day comes from exactly one watch: a watch owns
@@ -15,10 +19,12 @@
 //                       the clock. The owner's offset wins on its days; any other source fills the gaps.
 //   recordsTracks       True when the source's own activity files carry the route (see ctx.track), so a
 //                       route re-hosted by an app isn't read again.
-//   readRoute(file)     App only, optional: the {lat, lon} of an activity's uploaded file, read on demand.
+//   readRoute(file)     App only, optional: a Promise of the {lat, lon} of an activity's uploaded file, read
+//                       on demand.
+//   avatar              Optional: the path of a profile picture, shown on the overview.
 //   checksResting       Watch only: its resting heart rate is dropped on days with little wear or far above
 //                       the overnight rate (see build-data.mjs).
-//   read(ctx)           Pushes everything else through ctx, described below. Watches are read in the order
+//   read(ctx)           Async. Pushes everything else through ctx, described below. Watches are read in the order
 //                       they were worn, then apps.
 //
 // ctx gives a source the clock and the days it owns:
@@ -49,12 +55,18 @@
 //   ctx.food(entry), ctx.drink(date, ml)
 //   ctx.personalRecord(key, t, sec, current), ctx.stepRecord(value)
 //   ctx.note(key, value)        counts and checks shown in the Data notes chapter.
-import * as fitbit from './fitbit.mjs';
-import * as garmin from './garmin.mjs';
-import * as strava from './strava.mjs';
+//   ctx.progress(label, share)  how far a long read has got, share from 0 to 1, for a progress bar.
+import * as fitbit from './fitbit.js';
+import * as garmin from './garmin.js';
+import * as strava from './strava.js';
 
 const MODULES = [fitbit, garmin, strava];
 
-export function openSources(dataDir) {
-  return MODULES.map((m) => m.detect(dataDir)).map((folder, i) => (folder ? MODULES[i].open(folder) : null)).filter(Boolean);
+export async function openSources(folder, platform) {
+  const sources = [];
+  for (const m of MODULES) {
+    const dir = m.detect(folder);
+    if (dir != null) sources.push(await m.open(folder, dir, platform));
+  }
+  return sources;
 }

@@ -11,13 +11,13 @@ npm test             # the deduplication rules
 SITE_PASSWORD=... npm run build:site   # a password-gated copy in site/ for hosting
 ```
 
-Needs Node 18 or newer and has no dependencies. FIT and zip files are read by small parsers in `scripts/lib/`.
+Needs Node 18 or newer and has no dependencies. FIT and zip files are read by small parsers in `public/js/engine/lib/`; the analysis in `public/js/engine/` runs in Node (`npm run build:data`) and in the browser.
 
 Expected layout: `data/Takeout/`, `data/garmin*/` and `data/strava*/`.
 
 Optional, both git-ignored: `events.json` marks life events on the charts, and `exclusions.json` lists days the watch wasn't worn or you were sick. Copy `events.example.json` and `exclusions.example.json` to start.
 
-**How duplicates are handled** (`scripts/lib/dedupe.mjs`):
+**How duplicates are handled** (`public/js/engine/lib/dedupe.js`):
 
 - Each calendar day's heart rate, steps and sleep come from one watch: Fitbit before the first full Garmin day, Garmin after.
 - Activities that overlap across apps become one. Garmin figures win, and Strava supplies names and shoes.

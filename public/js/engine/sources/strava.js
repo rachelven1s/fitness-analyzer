@@ -1,47 +1,44 @@
 // Strava, from a Strava bulk export: data/strava*. Activities only; Strava never owns a day.
-import fs from 'node:fs';
-import path from 'node:path';
-import zlib from 'node:zlib';
-import { parseCsvText, readText, findFolder } from '../lib/files.mjs';
-import { fitRoute } from '../lib/fit-activity.mjs';
-import { normalizeType } from '../lib/dedupe.mjs';
+import { parseCsvText, readText, decodeText, findFolder, join } from '../lib/files.js';
+import { fitRoute } from '../lib/fit-activity.js';
+import { normalizeType } from '../lib/dedupe.js';
 
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
 
-export function detect(dataDir) {
-  const dir = findFolder(dataDir, 'strava');
-  return dir && fs.existsSync(path.join(dir, 'activities.csv')) ? dir : null;
+export function detect(folder) {
+  const dir = findFolder(folder, '', 'strava');
+  return dir && folder.exists(join(dir, 'activities.csv')) ? dir : null;
 }
 
-export function open(dir) {
-  const avatar = path.join(dir, 'profile.jpg');
+export async function open(folder, dir, platform) {
+  const avatar = join(dir, 'profile.jpg');
   return {
     id: 'strava',
     label: 'Strava',
     kind: 'app',
     // The profile picture greets you on the overview. Only the image is copied; the rest of the profile isn't read.
-    avatar: fs.existsSync(avatar) ? avatar : null,
+    avatar: folder.exists(avatar) ? avatar : null,
     // An activity's uploaded file, for activities that exist only on Strava.
-    readRoute(file) {
-      const full = path.join(dir, file);
-      if (!fs.existsSync(full)) return null;
-      let buf = fs.readFileSync(full);
-      if (file.endsWith('.gz')) buf = zlib.gunzipSync(buf);
+    async readRoute(file) {
+      const full = join(dir, file);
+      if (!folder.exists(full)) return null;
+      let buf = await folder.read(full);
+      if (file.endsWith('.gz')) buf = await platform.gunzip(buf);
       if (/\.fit(\.gz)?$/.test(file)) {
         const route = fitRoute(buf);
         return route.lat.length ? route : null;
       }
       const lat = [];
       const lon = [];
-      const text = buf.toString('utf8');
+      const text = decodeText(buf);
       const pattern = /\.gpx/.test(file)
         ? /lat="(-?[\d.]+)"\s+lon="(-?[\d.]+)"/g
         : /<LatitudeDegrees>(-?[\d.]+)<\/LatitudeDegrees>\s*<LongitudeDegrees>(-?[\d.]+)<\/LongitudeDegrees>/g;
       for (const m of text.matchAll(pattern)) { lat.push(+m[1]); lon.push(+m[2]); }
       return lat.length ? { lat, lon } : null;
     },
-    read(ctx) {
-      const rows = parseCsvText(readText(path.join(dir, 'activities.csv')));
+    async read(ctx) {
+      const rows = parseCsvText(await readText(folder, join(dir, 'activities.csv')));
       const head = rows[0];
       // Strava's header repeats names: the second "Distance" is metres and the first is display units.
       const col = (name, nth = 0) => {

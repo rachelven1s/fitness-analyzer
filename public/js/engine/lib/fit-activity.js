@@ -1,6 +1,6 @@
 // Reads a recorded activity out of a FIT file: its sport, the second-by-second distance and heart rate, and
 // the GPS track. FIT is the format every watch brand exports activities in, so this is shared by any source.
-import { decodeFit, fitTimeToMs } from './fit.mjs';
+import { decodeFit, fitTimeToMs } from './fit.js';
 
 const degrees = (semicircles) => (semicircles * 180) / 2147483648;
 export const ACTIVITY_FILE = 4;

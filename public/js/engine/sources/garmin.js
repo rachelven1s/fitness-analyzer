@@ -1,10 +1,9 @@
-// Garmin, from a Garmin Connect data export: data/garmin*/DI_CONNECT.
-import path from 'node:path';
-import { openZip } from '../lib/zip.mjs';
-import { decodeFit, fitTimeToMs } from '../lib/fit.mjs';
-import { activityCollector, ACTIVITY_FILE, ACTIVITY_MESSAGES } from '../lib/fit-activity.mjs';
-import { readJson, readJsonGlob, listFiles, findFolder } from '../lib/files.mjs';
-import { normalizeType, isIndoorRun, isImportedGarminWeight } from '../lib/dedupe.mjs';
+// Garmin, from a Garmin Connect data export: the DI_CONNECT folder, in data/garmin*/ or at the top of the zip.
+import { openZip } from '../lib/zip.js';
+import { decodeFit, fitTimeToMs } from '../lib/fit.js';
+import { activityCollector, ACTIVITY_FILE, ACTIVITY_MESSAGES } from '../lib/fit-activity.js';
+import { readJson, readJsonGlob, listFiles, join } from '../lib/files.js';
+import { normalizeType, isIndoorRun, isImportedGarminWeight } from '../lib/dedupe.js';
 
 const MIN = 60e3;
 const GRAMS_PER_LB = 453.592;
@@ -23,19 +22,30 @@ const median = (a) => {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 };
 
-export function detect(dataDir) {
-  const dir = findFolder(dataDir, 'garmin');
-  return dir ? path.join(dir, 'DI_CONNECT') : null;
+// The export's DI_CONNECT folder, at the top or up to two folders down: a zip may hold it directly or inside
+// a folder, and ./data holds the unzipped export in a garmin* folder.
+export function detect(folder) {
+  const search = (dir, depth) => {
+    if (folder.isDir(join(dir, 'DI_CONNECT'))) return join(dir, 'DI_CONNECT');
+    if (depth === 0) return null;
+    for (const name of folder.list(dir).sort()) {
+      const sub = join(dir, name);
+      const found = folder.isDir(sub) ? search(sub, depth - 1) : null;
+      if (found) return found;
+    }
+    return null;
+  };
+  return search('', 2);
 }
 
-export function open(dir) {
-  const GAGG = path.join(dir, 'DI-Connect-Aggregator');
-  const GWELL = path.join(dir, 'DI-Connect-Wellness');
-  const GFIT = path.join(dir, 'DI-Connect-Fitness');
-  const GMET = path.join(dir, 'DI-Connect-Metrics');
-  const GUP = path.join(dir, 'DI-Connect-Uploaded-Files');
+export async function open(folder, dir, platform) {
+  const GAGG = join(dir, 'DI-Connect-Aggregator');
+  const GWELL = join(dir, 'DI-Connect-Wellness');
+  const GFIT = join(dir, 'DI-Connect-Fitness');
+  const GMET = join(dir, 'DI-Connect-Metrics');
+  const GUP = join(dir, 'DI-Connect-Uploaded-Files');
 
-  const uds = readJsonGlob(GAGG, (f) => f.startsWith('UDSFile')).sort((a, b) => a.calendarDate.localeCompare(b.calendarDate));
+  const uds = (await readJsonGlob(folder, GAGG, (f) => f.startsWith('UDSFile'))).sort((a, b) => a.calendarDate.localeCompare(b.calendarDate));
   // Garmin can hold rows imported from another tracker, recognisable by a local time equal to GMT, and a
   // partial one from the day the watch was set up. The watch starts on the first full day it recorded itself.
   const recordedByWatch = (u) => u.wellnessStartTimeLocal && u.wellnessStartTimeLocal !== u.wellnessStartTimeGmt;
@@ -59,7 +69,7 @@ export function open(dir) {
     // Garmin's resting number can run wild when the watch barely recorded: May 2026 reports up to 115 bpm
     // beside a 55 bpm overnight rate.
     checksResting: true,
-    read(ctx) {
+    async read(ctx) {
       const { toLocal, dateOfLocal, offsetAt } = ctx;
       ctx.note('emptyGarminDays', uds.length - realUds.length);
 
@@ -80,7 +90,7 @@ export function open(dir) {
           resp: u.respiration?.avgWakingRespirationValue > 0 ? u.respiration.avgWakingRespirationValue : undefined,
         });
       }
-      for (const m of readJsonGlob(GMET, (f) => f.startsWith('MetricsMaxMet'))) {
+      for (const m of await readJsonGlob(folder, GMET, (f) => f.startsWith('MetricsMaxMet'))) {
         // Walking-based values are a different scale from the running estimate.
         if (m.vo2MaxValue && m.sport === 'RUNNING') ctx.estimate(m.calendarDate, { vo2g: m.vo2MaxValue });
       }
@@ -88,11 +98,14 @@ export function open(dir) {
       // FIT archives: all-day heart rate, steps and stress, and every recorded activity.
       const stepEvents = new Map(); // activity type -> numbers packing timestamp and running step count
       const fitFiles = { activity: 0, monitoring: 0, sleep: 0, other: 0, ignoredFitbitCsv: 0 };
-      for (const zipFile of listFiles(GUP, (f) => f.endsWith('.zip'))) {
-        const zip = openZip(zipFile);
+      const zipFiles = listFiles(folder, GUP, (f) => f.endsWith('.zip'));
+      for (const [i, zipFile] of zipFiles.entries()) {
+        const zip = await openZip(await folder.reader(zipFile), platform.inflateRaw, zipFile);
+        let done = 0;
         for (const entry of zip.entries) {
+          if (++done % 2000 === 0) ctx.progress(`Garmin activity and monitoring files, archive ${i + 1} of ${zipFiles.length}`, done / zip.entries.length);
           if (!entry.name.endsWith('.fit')) { fitFiles.ignoredFitbitCsv++; continue; } // other trackers' files re-uploaded to Garmin
-          const buf = zip.read(entry);
+          const buf = await zip.read(entry);
           let type = null;
           let last = null;
           let activity = null;
@@ -162,7 +175,7 @@ export function open(dir) {
       // The export has nightly stage totals but no timing: its sleep_level messages only hold 0 or 1, and the
       // stages themselves are computed on Garmin's servers. Those nights are painted as plain "asleep".
       let nightsSkipped = 0;
-      for (const s of readJsonGlob(GWELL, (f) => f.endsWith('_sleepData.json'))) {
+      for (const s of await readJsonGlob(folder, GWELL, (f) => f.endsWith('_sleepData.json'))) {
         const seconds = (s.deepSleepSeconds || 0) + (s.lightSleepSeconds || 0) + (s.remSleepSeconds || 0);
         if (s.calendarDate < firstDay || seconds < 3 * 3600 || /OFF_WRIST|UNCONFIRMED/.test(s.sleepWindowConfirmationType || '')) {
           nightsSkipped++;
@@ -179,7 +192,7 @@ export function open(dir) {
       }
       ctx.note('nightsSkipped', nightsSkipped);
 
-      for (const a of readJsonGlob(GFIT, (f) => f.endsWith('_summarizedActivities.json')).flatMap((x) => x.summarizedActivitiesExport || [])) {
+      for (const a of (await readJsonGlob(folder, GFIT, (f) => f.endsWith('_summarizedActivities.json'))).flatMap((x) => x.summarizedActivitiesExport || [])) {
         const start = +a.beginTimestamp;
         const elapsed = a.elapsedDuration ?? a.duration ?? 0;
         ctx.activity({
@@ -202,8 +215,8 @@ export function open(dir) {
 
       let bioWeightRows = 0;
       let importedWeights = 0;
-      const bioFile = listFiles(GWELL, (f) => f.endsWith('_userBioMetrics.json'))[0];
-      for (const b of bioFile ? readJson(bioFile) : []) {
+      const bioFile = listFiles(folder, GWELL, (f) => f.endsWith('_userBioMetrics.json'))[0];
+      for (const b of bioFile ? await readJson(folder, bioFile) : []) {
         if (!b.weight?.weight) continue;
         bioWeightRows++;
         const date = b.metaData.calendarDate.slice(0, 10);
@@ -214,11 +227,11 @@ export function open(dir) {
       ctx.note('importedWeights', importedWeights);
 
       // Activity entries are estimated sweat loss rather than water drunk, so only logged drinks count.
-      for (const h of readJsonGlob(GAGG, (f) => f.startsWith('HydrationLogFile'))) {
+      for (const h of await readJsonGlob(folder, GAGG, (f) => f.startsWith('HydrationLogFile'))) {
         if (h.hydrationSource !== 'GARMIN_ACTIVITY' && h.valueInML > 0) ctx.drink(h.calendarDate, h.valueInML);
       }
 
-      for (const c of readJsonGlob(GWELL, (f) => f.endsWith('_MenstrualCycles.json'))) {
+      for (const c of await readJsonGlob(folder, GWELL, (f) => f.endsWith('_MenstrualCycles.json'))) {
         ctx.cycle({
           start: c.startDate,
           len: c.actualCycleLength ?? c.applicableMenstrualCycleLength,
@@ -228,7 +241,7 @@ export function open(dir) {
         });
       }
 
-      const prRows = readJsonGlob(GFIT, (f) => f.endsWith('_personalRecord.json')).flatMap((x) => x.personalRecords || []);
+      const prRows = (await readJsonGlob(folder, GFIT, (f) => f.endsWith('_personalRecord.json'))).flatMap((x) => x.personalRecords || []);
       const PR_TYPES = { 'Best 1km Run': '1k', 'Best 5km Run': '5k', 'Best 10km Run': '10k', 'Best Half Marathon': 'half', 'Best Full Marathon': 'marathon' };
       for (const p of prRows) {
         const key = PR_TYPES[p.personalRecordType];
