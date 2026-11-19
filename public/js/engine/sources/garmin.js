@@ -193,7 +193,11 @@ export async function open(folder, dir, platform) {
       ctx.note('nightsSkipped', nightsSkipped);
 
       for (const a of (await readJsonGlob(folder, GFIT, (f) => f.endsWith('_summarizedActivities.json'))).flatMap((x) => x.summarizedActivitiesExport || [])) {
-        const start = +a.beginTimestamp;
+        // A multisport activity (a triathlon, say) is a parent whose legs are listed as activities of their own.
+        // The parent only repeats them, and has no beginTimestamp.
+        if (a.parent) continue;
+        const start = +(a.beginTimestamp ?? a.startTimeGmt);
+        if (!Number.isFinite(start)) continue;
         const elapsed = a.elapsedDuration ?? a.duration ?? 0;
         ctx.activity({
           start,
