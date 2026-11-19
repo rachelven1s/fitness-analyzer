@@ -50,6 +50,11 @@ let intradayPromise;
 
 const row = (date) => byDate.get(date);
 const handover = () => data.meta.handover;
+// The watches in the order they were worn. The latest is the main record; an earlier one is shown on its own.
+const watches = () => data.meta.watches;
+const watchName = () => watches().at(-1).label;
+const earlierWatch = () => watches().at(-2) ?? null;
+const hasSource = (id) => [...watches(), ...data.meta.apps].some((s) => s.id === id);
 
 function indexDaily(d) {
   const fields = Object.keys(d).filter((k) => k !== 'date');
@@ -595,23 +600,26 @@ function renderCompare() {
 function renderRecord() {
   const { coverage, tzSpans, firstDate, lastDate, dedupe } = data.meta;
   const a = dedupe.activities;
-  const rawTotal = a.raw.fitbit + a.raw.garmin + a.raw.strava;
+  const rawTotal = Object.values(a.raw).reduce((sum, n) => sum + n, 0);
   const allMonths = months(firstDate.slice(0, 7), lastDate.slice(0, 7));
   const order = ['Heart rate', 'Steps', 'Sleep', 'Activities: Fitbit', 'Activities: Garmin', 'Activities: Strava', 'GPS routes', 'Stress and recovery', 'Weight', 'Cycle log', 'Food log'];
   const rows = order.filter((name) => coverage.some((c) => c.row === name));
-  const shared = [
-    { name: 'Fitbit', only: a.fitbitOnly, shared: a.raw.fitbit - a.fitbitOnly },
-    { name: 'Garmin', only: a.garminOnly, shared: a.raw.garmin - a.garminOnly },
-    { name: 'Strava', only: a.stravaOnly, shared: a.raw.strava - a.stravaOnly },
-  ];
+  const shared = Object.keys(SOURCE).filter((id) => a.raw[id] != null)
+    .map((id) => ({ name: SOURCE[id].label, only: a[`${id}Only`], shared: a.raw[id] - a[`${id}Only`] }));
+  // Which copies were folded together, for the sources present.
+  const copies = [
+    a.raw.strava != null && a.raw.garmin != null && 'Strava re-hosts almost every Garmin activity',
+    a.clockShift != null && `Garmin's workouts were also copied into Fitbit with the clock moved ${a.clockShift} hours`,
+  ].filter(Boolean);
   const away = tzSpans.filter((s) => s.start >= handover() && s.zone !== 'Eastern').length;
 
   return chapter('record', '14 · How the data was merged',
-    `Your apps listed ${fmtInt(rawTotal)} activities. ${fmtInt(a.merged)} of them really happened.`,
+    `Your ${shared.length > 1 ? 'apps' : shared[0].name} listed ${fmtInt(rawTotal)} activities. ${fmtInt(a.merged)} of them really happened.`,
     'Each day comes from one watch, and each activity counts once.',
-    howMeasured(`Strava re-hosts almost every Garmin activity, and Garmin's workouts were also copied into Fitbit with the clock moved ${a.clockShift} hours. Each of those is now one entry. The Data notes below list every rule.`),
-    grid2(
-      figure({
+    howMeasured(`${copies.length ? `${copies.join(', and ')}. Each of those is now one entry. ` : 'Activities listed twice are now one entry. '}The Data notes below list every rule.`),
+    // With a single app there is nothing to split, so the clock figure takes the full width.
+    (shared.length > 1 ? grid2 : (...kids) => kids)(
+      shared.length < 2 ? null : figure({
         title: 'How much each app adds',
         sub: 'Activities each app listed, split by whether another app has it too.',
         height: 170,
@@ -737,7 +745,7 @@ function renderHeart() {
   return chapter('heart', '4 · Heart',
     `Your resting heart rate fell from ${fmt1(heartA.rhr)} bpm in ${heartPeriods[0].label} to ${fmt1(heartB.rhr)} in ${heartPeriods.at(-1).label}`,
     `Your raw 3 to 5 AM heart rate fell too, so it isn't just Garmin's formula. VO₂ max rose from ${fmt1(heartA.vo2)} to ${fmt1(heartB.vo2)}.`,
-    howMeasured(`Same ${comparePeriods().same.button} dates each year. Heart rate at 3 to 5 AM went from ${fmt1(heartA.overnight)} to ${fmt1(heartB.overnight)} bpm. Garmin's resting number typically reads about ${Math.abs(data.switch.garminGap).toFixed(0)} bpm below it.`),
+    howMeasured(`Same ${comparePeriods().same.button} dates each year. Heart rate at 3 to 5 AM went from ${fmt1(heartA.overnight)} to ${fmt1(heartB.overnight)} bpm. ${watches().at(-1).label}'s resting number typically reads about ${Math.abs(data.restingGap).toFixed(0)} bpm ${data.restingGap > 0 ? 'above' : 'below'} it.`),
     figure({
       title: 'Resting heart rate and 3 to 5 AM heart rate',
       sub: '28-day averages over each day\'s reading (faint). Click to open a day.',
@@ -829,6 +837,7 @@ function paceHeartFigure() {
   const base = rows.find((y) => y.cells.every(shown)) ?? rows[0];
   const last = rows.at(-1);
   const change = buckets.map((b, i) => (shown(base.cells[i]) && shown(last.cells[i]) ? { ...b, from: base.cells[i].hr, to: last.cells[i].hr, drop: base.cells[i].hr - last.cells[i].hr } : null)).filter(Boolean);
+  if (!change.length) return null;
   const easy = change[0];
   const biggest = change.reduce((p, q) => (q.drop > p.drop ? q : p));
   const smallest = change.reduce((p, q) => (q.drop < p.drop ? q : p));
@@ -928,9 +937,11 @@ function heartbeatFigure() {
   const gainAdj = (last.adjusted - first.adjusted) / first.adjusted;
   const gainRaw = (last.raw - first.raw) / first.raw;
   const validAdj = runs.map((r, i) => ({ x: dayMs(r.d), y: adjustedLine[i] })).filter((p) => p.y != null);
+  // The trend needs two years of runs, and enough runs for the 25-run median.
+  if (byYear.length < 2 || !validAdj.length) return null;
   return figure({
     title: 'How far one heartbeat carries you',
-    takeaway: `At the same 6:00/km pace, each beat carries you ${(gainAdj * 100).toFixed(0)}% further than in ${first.year}.`,
+    takeaway: `At the same 6:00/km pace, each beat carries you ${Math.abs(gainAdj * 100).toFixed(0)}% ${gainAdj >= 0 ? 'further' : 'less far'} than in ${first.year}.`,
     sub: 'Metres per heartbeat on outdoor runs. Dots are single runs; click one to open its day.',
     method: `Distance divided by heartbeats, minute by minute. Each run's first 10 minutes and the 2 minutes after any change of pace are left out while heart rate catches up. Faster minutes naturally score higher, about ${perKmh.toFixed(3)} m per beat for every extra km/h, so the blue line puts every minute on the same 6:00/km footing. Unadjusted, the gain is ${(gainRaw * 100).toFixed(1)}%, so ${gainAdj / gainRaw >= 0.9 ? 'nearly all' : gainAdj / gainRaw >= 0.6 ? 'most' : 'only some'} of it holds at a fixed pace.`,
     height: 320,
@@ -1275,6 +1286,7 @@ function renderLife() {
 // ---------- chapter: running ----------
 
 function prFigure(title, list) {
+  if (!list?.length) return null;
   const last = list.at(-1);
   const today = dayMs(data.meta.lastDate);
   // Stepped: a record stands until the next one beats it.
@@ -1373,39 +1385,50 @@ function renderRunning() {
   const peakWeek = weekKm.indexOf(Math.max(...weekKm));
   const years = [...new Set(sinceWatch.map((r) => r.d.slice(0, 4)))];
   const yearKm = years.map((y) => sinceWatch.filter((r) => r.d.startsWith(y)).reduce((s, r) => s + (r.km || 0), 0));
+  const biggestYear = yearKm.indexOf(Math.max(...yearKm));
   const totalKm = sinceWatch.reduce((s, r) => s + (r.km || 0), 0);
   const climbM = sinceWatch.reduce((s, r) => s + (r.gainM || 0), 0);
   const everests = climbM / 8849;
   const races = [...marathons].sort((a, b) => a.d.localeCompare(b.d));
-  const fastest = races.reduce((a, b) => (b.min < a.min ? b : a));
+  const fastest = races.length ? races.reduce((a, b) => (b.min < a.min ? b : a)) : null;
   const shoeTop = shoes.slice(0, 12);
   const medianShoeKm = median(shoes.filter((s) => s.km > 160).map((s) => s.km));
+  const recordKeys = ['1k', '5k', '10k', 'half', 'marathon'];
+  const hasRecords = recordKeys.some((k) => prs[k]?.length);
+
+  // The headline leads with the marathon when there are records to compare, and with distance otherwise.
+  const headline = fullList.length > 1 && firstFull.sec > bestFull.sec
+    ? `A ${fmtRace(bestFull.sec)} marathon, ${Math.round((firstFull.sec - bestFull.sec) / 60)} minutes faster than your first`
+    : bestFull
+      ? `A ${fmtRace(bestFull.sec)} marathon, and ${fmtInt(totalKm)} km of running since ${years[0]}`
+      : `${fmtInt(totalKm)} km of running since ${years[0]}`;
+  const yearText = biggestYear === years.length - 1
+    ? `${years.at(-1)} is ${years.length > 1 ? 'already your biggest year' : 'the first year'}, at ${fmtInt(yearKm.at(-1))} km.`
+    : `Your biggest year was ${years[biggestYear]}, at ${fmtInt(yearKm[biggestYear])} km.`;
+  const intro = races.length && firstFull
+    ? `${races.length} marathon${races.length === 1 ? '' : 's'} since ${fmtMonth(firstFull.d.slice(0, 7))}, and ${yearText.charAt(0).toLowerCase()}${yearText.slice(1)}`
+    : yearText;
+  const prFigures = [prFigure('Marathon', prs.marathon), prFigure('Half marathon', prs.half), prFigure('10K', prs['10k']), prFigure('5K', prs['5k'])].filter(Boolean);
 
   return chapter('running', '3 · Running',
-    `A ${fmtRace(bestFull.sec)} marathon, ${Math.round((firstFull.sec - bestFull.sec) / 60)} minutes faster than your first`,
-    `${races.length} marathons since ${fmtMonth(firstFull.d.slice(0, 7))}, and ${years.at(-1)} is already your biggest year, at ${fmtInt(yearKm.at(-1))} km.`,
-    howMeasured('Records come from Garmin\'s own history, which also counts your best splits inside longer runs.'),
+    headline,
+    intro,
+    hasRecords ? howMeasured(`Records come from ${watchName()}'s own history, which also counts your best splits inside longer runs.`) : null,
     tiles(
       tile('Distance run', `${fmtInt(totalKm)} km`, `${fmtInt(sinceWatch.length)} runs, ${fmtInt(totalKm / (sinceWatch.length || 1))} km each`),
       tile('Biggest week', `${fmt1(weekKm[peakWeek])} km`, `week of ${fmtDay(weeks[peakWeek])}`, dayButton(weeks[peakWeek])),
       tile('Climbed on runs', `${fmtInt(climbM)} m`, `about ${everests.toFixed(1)} Everests`),
-      tile('Fastest 1 km', prs['1k'] ? fmtRace(prs['1k'].at(-1).sec) : '—', prs['1k'] ? fmtDay(prs['1k'].at(-1).d) : null),
+      prs['1k'] ? tile('Fastest 1 km', fmtRace(prs['1k'].at(-1).sec), fmtDay(prs['1k'].at(-1).d)) : null,
     ),
     heartbeatFigure(),
     paceHeartFigure(),
-    subhead('Race records'),
-    grid2(
-      prFigure('Marathon', prs.marathon),
-      prFigure('Half marathon', prs.half),
-      prFigure('10K', prs['10k']),
-      prFigure('5K', prs['5k'])),
-    figure({
+    prFigures.length ? [subhead('Race records'), grid2(...prFigures)] : null,
+    hasRecords ? figure({
       title: 'Records set each year',
       takeaway: (() => {
-        const keys = ['1k', '5k', '10k', 'half', 'marathon'];
-        const counts = years.map((y) => keys.filter((k) => (prs[k] || []).some((pt) => pt.d.startsWith(y))).length);
+        const counts = years.map((y) => recordKeys.filter((k) => (prs[k] || []).some((pt) => pt.d.startsWith(y))).length);
         const best = counts.indexOf(Math.max(...counts));
-        return `${years.at(-1)} brought new records at ${counts.at(-1)} of 5 distances${best !== years.length - 1 ? `; ${years[best]} had the most, ${counts[best]}` : ', the most of any year'}.`;
+        return `${years.at(-1)} brought new records at ${counts.at(-1)} of 5 distances${best !== years.length - 1 ? `; ${years[best]} had the most, ${counts[best]}` : years.length > 1 ? ', the most of any year' : ''}.`;
       })(),
       sub: 'The best new record each year. A dash means none that year.',
       render(host) {
@@ -1419,11 +1442,13 @@ function renderRunning() {
               return el('td', { text: inYear.length ? fmtRace(inYear.at(-1).sec) : '—' });
             })))))));
       },
-    }),
-    figure({
-      title: 'Your marathons',
-      takeaway: `${races.length} marathons since ${fmtDay(races[0].d)}. The fastest, on ${fmtDay(fastest.d)}, took ${fmtDuration(fastest.min)} on the watch.`,
-      sub: 'Watch time. Race names from Strava.',
+    }) : null,
+    races.length ? figure({
+      title: races.length === 1 ? 'Your marathon' : 'Your marathons',
+      takeaway: races.length === 1
+        ? `On ${fmtDay(fastest.d)}, in ${fmtDuration(fastest.min)} on the watch.`
+        : `${races.length} marathons since ${fmtDay(races[0].d)}. The fastest, on ${fmtDay(fastest.d)}, took ${fmtDuration(fastest.min)} on the watch.`,
+      sub: `Watch time.${data.meta.apps?.length ? ` Race names from ${data.meta.apps.map((a) => a.label).join(' and ')}.` : ''}`,
       render(host) {
         host.append(el('div', { class: 'table-scroll' }, el('table', { class: 'races' },
           el('thead', null, el('tr', null, ['Date', 'Race', 'Watch time', 'Pace /km', 'Avg HR'].map((h) => el('th', { scope: 'col', text: h })))),
@@ -1434,7 +1459,7 @@ function renderRunning() {
             el('td', { text: fmtPace(r.min / r.km) }),
             el('td', { text: r.hr ? `${r.hr} bpm` : '—' })))))));
       },
-    }),
+    }) : null,
     subhead('Training'),
     figure({
       title: 'Kilometres every week',
@@ -1442,7 +1467,7 @@ function renderRunning() {
         const thisYear = weeks.map((d, i) => [d, weekKm[i]]).filter(([d]) => d.startsWith(years.at(-1))).map(([, v]) => v);
         return `Biggest week ${fmt1(weekKm[peakWeek])} km, from ${fmtDay(weeks[peakWeek])}. ${years.at(-1)} averages ${fmt1(mean(thisYear))} km a week.`;
       })(),
-      sub: 'Marathon weeks highlighted.',
+      sub: raceWeeks.size ? 'Marathon weeks highlighted.' : null,
       height: 240,
       render(host, width, t) {
         columnChart(host, width, t, {
@@ -1459,23 +1484,23 @@ function renderRunning() {
           onPick: (d) => openDay(d),
         });
       },
-      legend: (t) => [{ color: t.series[0], label: 'Kilometres' }, { color: t.series[1], label: 'Marathon week' }],
+      legend: (t) => [{ color: t.series[0], label: 'Kilometres' }, ...(raceWeeks.size ? [{ color: t.series[1], label: 'Marathon week' }] : [])],
       table: () => ({ columns: ['Week of', 'Kilometres'], rows: weeks.map((d, i) => [fmtDay(d), fmt1(weekKm[i])]) }),
     }),
-    figure({
-        title: `${shoes.length} pairs of shoes`,
-        takeaway: `Most worn: ${shoes[0].name}, ${fmtInt(shoes[0].km)} km. A pair typically lasts about ${fmtInt(medianShoeKm)} km.`,
+    shoes.length ? figure({
+        title: shoes.length === 1 ? 'One pair of shoes' : `${shoes.length} pairs of shoes`,
+        takeaway: `Most worn: ${shoes[0].name}, ${fmtInt(shoes[0].km)} km.${medianShoeKm != null ? ` A pair typically lasts about ${fmtInt(medianShoeKm)} km.` : ''}`,
         sub: 'Kilometres on each pair, from Strava.',
         height: 330,
         render(host, width, t) {
           hBars(host, width, t, { rows: shoeTop.map((s) => ({ label: s.name, value: s.km, shoe: s })), labelWidth: Math.min(180, width * 0.48), fmt: (v) => `${v} km`, tipLabel: 'Kilometres', tipExtra: (r) => tipRow(null, 'Runs', fmtInt(r.shoe.runs)) });
         },
         table: () => ({ columns: ['Shoe', 'Kilometres', 'Runs', 'First run', 'Last run'], rows: shoes.map((s) => [s.name, fmtInt(s.km), fmtInt(s.runs), fmtDay(s.first), fmtDay(s.last)]) }),
-      }),
-    subhead('Places'),
-    figure({
+      }) : null,
+    data.places.length || data.routes.length ? subhead('Places') : null,
+    data.places.length ? figure({
       title: 'Where you run',
-      takeaway: data.places[0] ? `Most of your routes are ${data.places[0].name ? `around ${data.places[0].name}` : 'in one place'}: ${fmtInt(data.places[0].routes)} routes, ${fmtInt(data.places[0].km)} km.` : null,
+      takeaway: `Most of your routes are ${data.places[0].name ? `around ${data.places[0].name}` : 'in one place'}: ${fmtInt(data.places[0].routes)} routes, ${fmtInt(data.places[0].km)} km.`,
       sub: 'Every GPS trace, darker where you return most.',
       method: 'No map sits behind these, but the street patterns are recognizable, so this figure hides with the private chapters.',
       private: true,
@@ -1483,16 +1508,16 @@ function renderRunning() {
         host.append(el('div', { class: 'places' }, data.places.slice(0, 3).map((p) => placeCard(p, t))));
       },
       table: () => ({ columns: ['Place', 'Routes', 'Kilometres', 'First year', 'Last year'], rows: data.places.map((p) => [p.name || 'Elsewhere', fmtInt(p.routes), fmtInt(p.km), String(p.first), String(p.last)]) }),
-    }),
-    figure({
+    }) : null,
+    data.routes.length ? figure({
       title: `Your ${data.routes.length} longest outings, as shapes`,
-      takeaway: data.routes[0] ? `The longest is a ${fmt1(data.routes[0].km)} km ${(data.routes[0].type || 'outing').toLowerCase()} on ${fmtDay(data.routes[0].d)}.` : null,
+      takeaway: `The longest is a ${fmt1(data.routes[0].km)} km ${(data.routes[0].type || 'outing').toLowerCase()} on ${fmtDay(data.routes[0].d)}.`,
       sub: 'All sports, shapes only. Click one to open its day.',
       render(host, width, t) {
         host.append(el('div', { class: 'routes' }, data.routes.map((r) => routeCard(r, t))));
       },
       table: () => ({ columns: ['Date', 'Type', 'Kilometres', 'Minutes'], rows: data.routes.map((r) => [fmtDay(r.d), r.type || '—', fmt1(r.km), String(r.min)]) }),
-    }));
+    }) : null);
 }
 
 function routeCard(r, t) {
@@ -2059,7 +2084,9 @@ function renderBody() {
   return chapter('body', '9 · Weight',
     `From ${fmt1(first.lb)} lb in ${first.d.slice(0, 4)} to ${fmt1(latest.lb)} lb now`,
     `${fmtInt(w.length)} days with a scale reading, across your whole history.`,
-    howMeasured(`Fitbit and Garmin's biometrics file held ${fmtInt(d.rows.fitbit + d.rows.biometrics)} rows between them, most of them repeats or imported placeholders. Scale readings aren't affected by the watch switch. The line breaks wherever more than six weeks passed without a reading.`),
+    howMeasured(`${d.rows.fitbit != null
+      ? `Fitbit and Garmin's biometrics file held ${fmtInt(d.rows.fitbit + (d.rows.biometrics ?? 0))} rows between them, most of them repeats or imported placeholders. Scale readings aren't affected by the watch switch.`
+      : `Garmin's biometrics file held ${fmtInt(d.rows.biometrics ?? 0)} rows, most of them repeats or imported placeholders.`} The line breaks wherever more than six weeks passed without a reading.`),
     tiles(
       tile('Latest', `${fmt1(latest.lb)} lb`, fmtDay(latest.d)),
       tile('Last 90 days', `${fmt1(mean(recent.map((p) => p.lb)))} lb`, `average of ${recent.length} readings`),
@@ -2154,12 +2181,16 @@ function renderFood() {
 
 function renderCycle() {
   const c = data.cycles;
-  const ERAS = {
+  // With a logged IUD start the cycles split into before and with it. Without one, every cycle is in 'before'.
+  const hasIud = c.iudDate != null;
+  const ERAS = hasIud ? {
     before: { label: 'Before IUD', phrase: 'before the IUD', slot: 0, rhr: c.rhrBefore, sleep: c.sleepBefore, inEra: (d) => d < c.iudDate },
     with: { label: 'With IUD', phrase: 'with the IUD', slot: 1, rhr: c.rhrWith, sleep: c.sleepWith, inEra: (d) => d >= c.iudDate },
+  } : {
+    before: { label: 'All cycles', phrase: 'across your cycles', slot: 0, rhr: c.rhrBefore, sleep: c.sleepBefore, inEra: () => true },
   };
-  const VIEWS = [['with', 'With IUD'], ['before', 'Before IUD'], ['both', 'Both']];
-  let view = 'with';
+  const VIEWS = hasIud ? [['with', 'With IUD'], ['before', 'Before IUD'], ['both', 'Both']] : [];
+  let view = hasIud ? 'with' : 'before';
   const shown = () => (view === 'both' ? ['before', 'with'] : [view]);
   const solid = (fold) => fold.days.filter((x) => x.n >= 15);
   const swing = (fold) => {
@@ -2170,8 +2201,8 @@ function renderCycle() {
   };
   const toPts = (fold) => solid(fold).map((x) => ({ x: x.day, y: x.mean, lo: x.mean - 1.96 * x.se, hi: x.mean + 1.96 * x.se }));
   const complete = c.list.filter((x) => x.confirmed && x.len >= 21 && x.len <= 45);
-  const iudLabel = fmtMonth(c.iudDate.slice(0, 7));
-  const withSwing = swing(c.rhrWith);
+  const iudLabel = hasIud ? fmtMonth(c.iudDate.slice(0, 7)) : null;
+  const mainSwing = swing(ERAS[view].rhr);
 
   const foldFigure = (title, sub, key, unit, table) => figure({
     title,
@@ -2234,8 +2265,9 @@ function renderCycle() {
       return `${ERAS[era].phrase}, resting heart rate swings ${fmt1(s.size)} bpm, lowest around day ${s.low.day} and highest around day ${s.high.day}`;
     });
     summary.textContent = `${parts.join('; ')}.`.replace(/^./, (ch) => ch.toUpperCase());
+    const since = view === 'both' || !hasIud ? `from ${fmtMonth(list[0].start.slice(0, 7))}` : `${view === 'with' ? 'since' : 'until'} ${iudLabel}`;
     tileHost.replaceChildren(tiles(
-      tile('Complete cycles', String(list.length), view === 'both' ? `from ${fmtMonth(list[0].start.slice(0, 7))}` : `${view === 'with' ? 'since' : 'until'} ${iudLabel}`),
+      tile('Complete cycles', String(list.length), since),
       tile('Median cycle', `${median(lens)} days`),
       tile('Range', `${Math.min(...lens)} to ${Math.max(...lens)} days`, 'cycles over 45 days are left out'),
       ...shown().map((era) => tile(`Heart-rate swing, ${ERAS[era].phrase}`, `${fmt1(swing(ERAS[era].rhr).size)} bpm`, 'lowest to highest cycle day')),
@@ -2256,10 +2288,12 @@ function renderCycle() {
   drawTiles();
 
   return chapter('cycle', '10 · Cycle',
-    `Your resting heart rate follows your cycle, by about ${fmt1(withSwing.size)} bpm`,
+    `Your resting heart rate follows your cycle, by about ${fmt1(mainSwing.size)} bpm`,
     `So one higher week is often the cycle, not lost fitness.`,
-    howMeasured(`${c.complete} complete cycles: Fitbit's log until the IUD in ${iudLabel}, and Garmin's after. Each cycle is measured against its own average, so the difference between watches largely cancels out.`),
-    el('div', { class: 'seg', role: 'group', 'aria-label': 'Which cycles to show' }, buttons),
+    howMeasured(hasIud
+      ? `${c.complete} complete cycles: Fitbit's log until the IUD in ${iudLabel}, and Garmin's after. Each cycle is measured against its own average, so the difference between watches largely cancels out.`
+      : `${c.complete} complete cycles from your cycle log. Each cycle is measured against its own average, so slow changes in fitness largely cancel out.`),
+    hasIud ? el('div', { class: 'seg', role: 'group', 'aria-label': 'Which cycles to show' }, buttons) : null,
     summary,
     tileHost,
     grid2(rhrFig, sleepFig),
@@ -2567,28 +2601,42 @@ function renderFitbit() {
 function renderNotes() {
   const { dedupe: d, checks: c, handover: h } = data.meta;
   const a = d.activities;
+  const has = hasSource;
+  const main = watchName();
+  const earlier = earlierWatch();
+  const long = (a.distanceDisagreements || []).find((x) => x.strava - x.garmin > 5 && x.used === 'strava');
+  const notWorn = d.exclusions.filter((x) => (x.kind || 'not-worn') === 'not-worn');
+  // Each note applies only when its export is there.
   const items = [
-    ['Runs on your machine', 'The server listens only on this computer, and the page loads no outside scripts, fonts or maps. Passwords, logins, emails, profile files, social data and photos in your exports are never read.'],
-    ['One watch per day', `Each calendar day comes from one watch: Fitbit before ${fmtDay(h)}, Garmin from then on. ${fmtInt(d.droppedFitbitHr)} Fitbit heart-rate samples after the switch and ${fmtInt(d.emptyGarminDays)} empty or imported Garmin days before it were set aside.`],
-    ['Activities merged', `${fmtInt(a.raw.fitbit + a.raw.garmin + a.raw.strava)} listed, ${fmtInt(a.merged)} kept. Two entries are one activity if they overlap for over half of the shorter one and neither is under 30% the length of the other, so a walk inside a long run stays separate. A fragment inside another app's run of the same type joins that run. ${fmtInt(a.garminStrava)} were on both Garmin and Strava, and Strava supplies names, shoes and any activity type you corrected.`],
-    ['When apps disagree on distance', `Garmin's figure is used unless they differ by over 300 m, which happened ${a.distanceDisagreements.length} times. Treadmill runs keep Garmin's corrected distance. Outdoors, Strava's version is used, because it's usually a longer recording after the watch stopped early (${fmtDay(a.distanceDisagreements.find((x) => x.strava - x.garmin > 5 && x.used === 'strava').date)}: ${fmt1(a.distanceDisagreements.find((x) => x.strava - x.garmin > 5 && x.used === 'strava').garmin)} km on Garmin, ${fmt1(a.distanceDisagreements.find((x) => x.strava - x.garmin > 5 && x.used === 'strava').strava)} km on Strava) or a corrected race distance.`],
-    ['Fitbit\'s copies', `${fmtInt(a.syncedCopies)} of Fitbit's "manual" workouts are Garmin or Strava activities, nearly all with the clock moved exactly ${a.clockShift} hours and the seconds zeroed. They match on start minute and duration. ${a.genuineManual} true manual entries remain.`],
-    ['Kept from one app only', `${fmtInt(a.garminOnly)} activities exist only on Garmin, mostly short walks you didn't send to Strava, and ${fmtInt(a.stravaOnly)} only on Strava, including a canoe trip and uploaded runs. ${fmtInt(a.fitbitOnly)} are Fitbit activities from before the Garmin.`],
-    ['Weight', `${fmtInt(d.weight.imports)} Garmin rows before the switch were dropped: Fitbit imports stamped exactly midnight GMT, reading a default 120 lb, a day off, or interpolated.`],
-    ['Fitbit files inside Garmin', `Your Garmin archive holds ${d.fitFiles.ignoredFitbitCsv} re-uploaded Fitbit files. Almost all their activity rows read zero steps and their weights are the same placeholders, so they aren't used.`],
-    ['Sleep', `Fitbit's "minutes asleep" field is far too low on many nights, so its sleep is summed from stages, which matches the score file (median difference ${c.sleepStageVsScoreMedianDiffMin} min across ${fmtInt(c.sleepChecked)} nights). Garmin's export has nightly stage totals only. ${d.nightsSkipped} Garmin nights that were off-wrist, unconfirmed or under 3 hours are excluded.`],
-    ['Garmin steps through the day', `Decoded from ${fmtInt(d.fitFiles.monitoring)} monitoring files, they match Garmin's own daily totals (median difference ${c.stepCheck.medianPct}% over ${fmtInt(c.stepCheck.days)} days).`],
-    ['Pace within each run', `Pace, running heart rate and metres per heartbeat use each run minute by minute, from ${fmtInt(d.segments.runs)} outdoor Garmin runs, rather than one average per run. The first ${d.segments.rules.skipFirstMinutes} minutes of a run and the ${d.segments.rules.settleMinutes} minutes after any change of pace over ${Math.round(d.segments.rules.samePace * 100)}% are left out while heart rate catches up. Faster segments, such as interval reps, are found second by second: at least ${d.segments.rules.fasterMinSeconds} seconds at ${Math.round(d.segments.rules.fasterBy * 100)}% or more quicker than the easier side of that run, and close to its fastest stretch. Checked against 546 laps you marked by hand in 166 interval sessions, this finds about 9 in 10 reps, nearly all of those over a minute long, at a pace within 1% of your lap. A run held at one fast pace throughout, such as a race, counts as regular running, and heart rate on short reps reads low because heart rate lags pace. Treadmill runs are left out because their pace comes from the wrist, not GPS.`],
-    ['Garmin calories', 'Activity "calories" in Garmin\'s export are 4.19× Strava\'s on every matched activity, because they\'re kilojoules. They\'re converted here.'],
-    ['Time zones', 'Fitbit\'s timestamps are UTC and shifted using the offsets stored with sleep stages. Garmin\'s use its daily local-time records. A travel day can be off by a few hours.'],
-    ['Main chapters are Garmin only', `From ${fmtDay(h)} one watch measured everything the same way, so those chapters and the year-over-year comparisons use only that. Weight and cycle dates aren't measured by a watch, so they keep their full history. Fitbit data has its own chapter.`],
-    ['Days you were sick', `${sickRanges().map((x) => `${fmtDay(x.from)} to ${fmtDay(x.to)}`).join('; ')}. Resting heart rate rose to 66 to 67 bpm and Body Battery stayed near empty. These days stay in the day view, calendars, sleep, steps and distance run, but are left out of heart-rate and stress averages, the improvement analysis, heart rate on runs, metres per heartbeat, the cycle analysis and the day-to-day links.`],
-    ['Days the watch wasn\'t worn', `${d.exclusions.filter((x) => (x.kind || 'not-worn') === 'not-worn').map((x) => `${fmtDay(x.from)} to ${fmtDay(x.to)}`).join('; ')}: the watch was on but not on your wrist, so its heart rate, steps, sleep and stress readings are ignored. Runs from those days are kept, since you carried it on them and wore a chest strap. The dates live in exclusions.json in the project folder, where you can add more.`],
-    ['Resting heart rate', `Garmin's export has two resting fields. The one shown is each day's own reading. The other is a 7-day average, which lags and smears any bad day across the next week. ${fmtInt(d.rhrDropped)} daily readings were also dropped, on days with too little wear or reading over 15 bpm above that night's 3 to 5 AM rate.`],
-    ['Swim laps ignored', `Fitbit lists ${fmtInt(c.swimLaps)} swim laps but only ${c.swimWorkouts} swim workouts, so the lap file looks like false detections from arm motion.`],
-    ['Not used', 'Strava weather (on about a quarter of activities), kudos, comments, followers and photos; Garmin golf and aviation folders; and Garmin nutrition, which has calories for only about ten days.'],
-    ['Heartbeats are an estimate', 'The total integrates minute-level readings across gaps of up to 2 minutes, so time off the wrist isn\'t counted.'],
-  ];
+    [true, 'Runs on your machine', 'The server listens only on this computer, and the page loads no outside scripts, fonts or maps. Passwords, logins, emails, profile files, social data and photos in your exports are never read.'],
+    [earlier, 'One watch per day', () => `Each calendar day comes from one watch: ${earlier.label} before ${fmtDay(h)}, ${main} from then on. ${fmtInt(d.droppedHr?.[earlier.id] ?? 0)} ${earlier.label} heart-rate samples after the switch${d.emptyGarminDays ? ` and ${fmtInt(d.emptyGarminDays)} empty or imported Garmin days before it` : ''} were set aside.`],
+    [true, 'Activities merged', () => `${fmtInt(Object.values(a.raw).reduce((x, y) => x + y, 0))} listed, ${fmtInt(a.merged)} kept. Two entries are one activity if they overlap for over half of the shorter one and neither is under 30% the length of the other, so a walk inside a long run stays separate. A fragment inside another app's run of the same type joins that run.${has('garmin') && has('strava') ? ` ${fmtInt(a.garminStrava)} were on both Garmin and Strava, and Strava supplies names, shoes and any activity type you corrected.` : ''}`],
+    [has('garmin') && has('strava'), 'When apps disagree on distance', () => `Garmin's figure is used unless they differ by over 300 m, which happened ${a.distanceDisagreements.length} times. Treadmill runs keep Garmin's corrected distance. Outdoors, Strava's version is used, because it's usually a longer recording after the watch stopped early${long ? ` (${fmtDay(long.date)}: ${fmt1(long.garmin)} km on Garmin, ${fmt1(long.strava)} km on Strava)` : ''} or a corrected race distance.`],
+    [a.syncedCopies > 0, 'Fitbit\'s copies', () => `${fmtInt(a.syncedCopies)} of Fitbit's "manual" workouts are Garmin or Strava activities, nearly all with the clock moved exactly ${a.clockShift} hours and the seconds zeroed. They match on start minute and duration. ${a.genuineManual} true manual entries remain.`],
+    [has('strava') && has('garmin'), 'Kept from one app only', () => `${fmtInt(a.garminOnly)} activities exist only on Garmin, mostly short walks you didn't send to Strava, and ${fmtInt(a.stravaOnly)} only on Strava, including a canoe trip and uploaded runs.${has('fitbit') ? ` ${fmtInt(a.fitbitOnly)} are Fitbit activities from before the Garmin.` : ''}`],
+    [d.weight.imports > 0, 'Weight', () => `${fmtInt(d.weight.imports)} Garmin rows before the switch were dropped: Fitbit imports stamped exactly midnight GMT, reading a default 120 lb, a day off, or interpolated.`],
+    [d.fitFiles?.ignoredFitbitCsv > 0, 'Fitbit files inside Garmin', () => `Your Garmin archive holds ${d.fitFiles.ignoredFitbitCsv} re-uploaded Fitbit files. Almost all their activity rows read zero steps and their weights are the same placeholders, so they aren't used.`],
+    [has('fitbit'), 'Fitbit sleep', () => `Fitbit's "minutes asleep" field is far too low on many nights, so its sleep is summed from stages, which matches the score file (median difference ${c.sleepStageVsScoreMedianDiffMin} min across ${fmtInt(c.sleepChecked)} nights).`],
+    [has('garmin'), 'Garmin sleep', () => `Garmin's export has nightly stage totals only, without their timing. ${d.nightsSkipped} Garmin nights that were off-wrist, unconfirmed or under 3 hours are excluded.`],
+    [has('garmin'), 'Garmin steps through the day', () => `Decoded from ${fmtInt(d.fitFiles.monitoring)} monitoring files, they match Garmin's own daily totals (median difference ${c.stepCheck.medianPct}% over ${fmtInt(c.stepCheck.days)} days).`],
+    [d.segments.runs > 0, 'Pace within each run', () => `Pace, running heart rate and metres per heartbeat use each run minute by minute, from ${fmtInt(d.segments.runs)} outdoor ${main} runs, rather than one average per run. The first ${d.segments.rules.skipFirstMinutes} minutes of a run and the ${d.segments.rules.settleMinutes} minutes after any change of pace over ${Math.round(d.segments.rules.samePace * 100)}% are left out while heart rate catches up. Faster segments, such as interval reps, are found second by second: at least ${d.segments.rules.fasterMinSeconds} seconds at ${Math.round(d.segments.rules.fasterBy * 100)}% or more quicker than the easier side of that run, and close to its fastest stretch. Checked against 546 laps you marked by hand in 166 interval sessions, this finds about 9 in 10 reps, nearly all of those over a minute long, at a pace within 1% of your lap. A run held at one fast pace throughout, such as a race, counts as regular running, and heart rate on short reps reads low because heart rate lags pace. Treadmill runs are left out because their pace comes from the wrist, not GPS.`],
+    [has('garmin'), 'Garmin calories', 'Activity "calories" in Garmin\'s export are 4.19× Strava\'s on every matched activity, because they\'re kilojoules. They\'re converted here.'],
+    [true, 'Time zones', () => [
+      has('fitbit') ? 'Fitbit\'s timestamps are UTC and shifted using the offsets stored with sleep stages.' : null,
+      has('garmin') ? 'Garmin\'s use its daily local-time records.' : null,
+      'A travel day can be off by a few hours.',
+    ].filter(Boolean).join(' ')],
+    [earlier, `Main chapters are ${main} only`, () => `From ${fmtDay(h)} one watch measured everything the same way, so those chapters and the year-over-year comparisons use only that. Weight and cycle dates aren't measured by a watch, so they keep their full history. ${earlier.label} data has its own chapter.`],
+    [sickRanges().length > 0, 'Days you were sick', () => `${sickRanges().map((x) => `${fmtDay(x.from)} to ${fmtDay(x.to)}`).join('; ')}. Resting heart rate rose to 66 to 67 bpm and Body Battery stayed near empty. These days stay in the day view, calendars, sleep, steps and distance run, but are left out of heart-rate and stress averages, the improvement analysis, heart rate on runs, metres per heartbeat, the cycle analysis and the day-to-day links.`],
+    [notWorn.length > 0, 'Days the watch wasn\'t worn', () => `${d.exclusions.filter((x) => (x.kind || 'not-worn') === 'not-worn').map((x) => `${fmtDay(x.from)} to ${fmtDay(x.to)}`).join('; ')}: the watch was on but not on your wrist, so its heart rate, steps, sleep and stress readings are ignored. Runs from those days are kept, since you carried it on them and wore a chest strap. The dates live in exclusions.json in the project folder, where you can add more.`],
+    [has('garmin'), 'Resting heart rate', () => `Garmin's export has two resting fields. The one shown is each day's own reading. The other is a 7-day average, which lags and smears any bad day across the next week. ${fmtInt(d.rhrDropped)} daily readings were also dropped, on days with too little wear or reading over 15 bpm above that night's 3 to 5 AM rate.`],
+    [has('fitbit') && c.swimLaps > 0, 'Swim laps ignored', () => `Fitbit lists ${fmtInt(c.swimLaps)} swim laps but only ${c.swimWorkouts} swim workouts, so the lap file looks like false detections from arm motion.`],
+    [has('garmin') || has('strava'), 'Not used', () => `${[
+      has('strava') ? 'Strava weather (on about a quarter of activities), kudos, comments, followers and photos' : null,
+      has('garmin') ? 'Garmin golf and aviation folders; and Garmin nutrition, which has calories for only about ten days' : null,
+    ].filter(Boolean).join('; ')}.`],
+    [true, 'Heartbeats are an estimate', 'The total integrates minute-level readings across gaps of up to 2 minutes, so time off the wrist isn\'t counted.'],
+  ].filter(([when]) => when).map(([, heading, body]) => [heading, typeof body === 'function' ? body() : body]);
   return chapter('notes', '16 · Data notes', 'How the record was merged and cleaned', null,
     el('div', { class: 'notes' }, items.map(([heading, b]) => el('details', { class: 'note' }, el('summary', { text: heading }), el('p', { text: b })))));
 }
@@ -2711,6 +2759,29 @@ function drawNightStrip(host, night, dialog, t) {
 
 // ---------- shell ----------
 
+// What each chapter needs from the data. Exports differ: a watch without stress tracking, no Strava, no
+// earlier watch to compare with. A chapter is built only when its data is there.
+const hasDaily = (field, from = handover()) => data.daily.date.some((d, i) => d >= from && data.daily[field][i] != null);
+const CHAPTER_NEEDS = {
+  compare: () => hasDaily('steps'),
+  life: () => lifeEvents().length > 0,
+  running: () => garminRuns().length > 0,
+  heart: () => hasDaily('rhr'),
+  movement: () => hasDaily('steps'),
+  workouts: () => data.workouts.length > 0,
+  sleep: () => data.nights.length > 0,
+  recovery: () => hasDaily('stress'),
+  body: () => data.weight.length > 0,
+  cycle: () => (data.cycles.iudDate ? data.cycles.rhrWith : data.cycles.rhrBefore).days.some((x) => x.n >= 15),
+  links: () => data.correlations.length > 0,
+  // Comparing two watches needs a switch between them.
+  switch: () => data.switch != null,
+  fitbit: () => data.switch != null,
+  record: () => true,
+  food: () => data.food.entries > 0,
+  notes: () => true,
+};
+
 // The chapters are grouped into a few pages at /<page>, each a run of sections. The overview at / is the hero and a card per page.
 const PAGES = [
   { id: 'trends', label: 'Trends', emoji: '📈', tone: 'blue', chapters: ['compare', 'life'] },
@@ -2760,34 +2831,44 @@ function yearBars(rows, fmt) {
 
 // Two findings that cut across the record: running economy, and sleep and what it does to the next day.
 function renderHighlights() {
-  const { byYear } = beatData();
-  const first = byYear[0];
-  const last = byYear.at(-1);
-  const gain = (last.adjusted - first.adjusted) / first.adjusted;
-  const fullList = data.prs.marathon || [];
-  const same = comparePeriods().same.periods;
-  const sleepYears = same.map((p) => ({ label: p.label, v: periodStats(p).asleep })).filter((r) => r.v != null);
-  const stressDays = data.daily.date.filter((d) => !isSick(d) && row(d).stress != null && row(d).sleepMin != null).map(row);
-  const stressAfter = (test) => mean(stressDays.filter((r) => test(r.sleepMin)).map((r) => r.stress));
   const card = (kicker, heading, body, chart, href, linkText, tone) => el('a', { class: 'highlight', href, 'data-tone': tone },
     el('span', { class: 'kicker', text: kicker }),
     el('span', { class: 'highlight-heading', text: heading }),
     el('span', { class: 'highlight-body', text: body }),
     chart,
     el('span', { class: 'highlight-link', text: `${linkText} →` }));
+  const cards = [];
+  // Each card needs at least two years to compare, and its chapter to link to.
+  const byYear = sections.has('running') ? beatData().byYear : [];
+  if (byYear.length > 1) {
+    const first = byYear[0];
+    const last = byYear.at(-1);
+    const gain = (last.adjusted - first.adjusted) / first.adjusted;
+    const fullList = data.prs.marathon || [];
+    cards.push(card('🏃 Running economy',
+      `Each heartbeat now carries you ${(gain * 100).toFixed(0)}% ${gain >= 0 ? 'further' : 'less far'}`,
+      `Metres per beat at a 6:00/km pace.${fullList.length > 1 ? ` Marathon: ${fmtRace(fullList[0].sec)} → ${fmtRace(fullList.at(-1).sec)}.` : ''}`,
+      yearBars(byYear.map((y) => ({ label: y.year, v: y.adjusted })), (v) => `${v.toFixed(2)} m`),
+      '/fitness#running', 'See your running', 'orange'));
+  }
+  const same = sections.has('sleep') ? comparePeriods().same.periods : [];
+  const sleepYears = same.map((p) => ({ label: p.label, v: periodStats(p).asleep })).filter((r) => r.v != null);
+  if (sleepYears.length > 1) {
+    const change = sleepYears.at(-1).v - sleepYears[0].v;
+    const stressDays = data.daily.date.filter((d) => !isSick(d) && row(d).stress != null && row(d).sleepMin != null).map(row);
+    const stressAfter = (test) => mean(stressDays.filter((r) => test(r.sleepMin)).map((r) => r.stress));
+    const short = stressAfter((m) => m < 420);
+    const long = stressAfter((m) => m >= 480);
+    cards.push(card('😴 Sleep',
+      `You sleep ${fmtDuration(Math.abs(change))} ${change >= 0 ? 'more' : 'less'} a night than in ${sleepYears[0].label}`,
+      `Same ${comparePeriods().same.button} dates each year.${short != null && long != null ? ` Next-day stress: ${fmt1(short)} after under 7 hours, ${fmt1(long)} after 8 or more.` : ''}`,
+      yearBars(sleepYears, (v) => fmtDuration(v)),
+      '/sleep#sleep', 'See your sleep', 'purple'));
+  }
+  if (!cards.length) return null;
   return el('div', { class: 'highlights-wrap' },
     el('h2', { class: 'overview-heading', text: 'What stands out' }),
-    el('div', { class: 'highlights' },
-      card('🏃 Running economy',
-        `Each heartbeat now carries you ${(gain * 100).toFixed(0)}% further`,
-        `Metres per beat at a 6:00/km pace.${fullList.length > 1 ? ` Marathon: ${fmtRace(fullList[0].sec)} → ${fmtRace(fullList.at(-1).sec)}.` : ''}`,
-        yearBars(byYear.map((y) => ({ label: y.year, v: y.adjusted })), (v) => `${v.toFixed(2)} m`),
-        '/fitness#running', 'See your running', 'orange'),
-      card('😴 Sleep',
-        `You sleep ${fmtDuration(sleepYears.at(-1).v - sleepYears[0].v)} more a night than in ${sleepYears[0].label}`,
-        `Same ${comparePeriods().same.button} dates each year. Next-day stress: ${fmt1(stressAfter((m) => m < 420))} after under 7 hours, ${fmt1(stressAfter((m) => m >= 480))} after 8 or more.`,
-        yearBars(sleepYears, (v) => fmtDuration(v)),
-        '/sleep#sleep', 'See your sleep', 'purple')));
+    el('div', { class: 'highlights' }, cards));
 }
 
 function renderHome() {
@@ -2994,7 +3075,19 @@ async function main() {
     notes: renderNotes,
   };
   // Every chapter is built once up front, so the overview can show each one's headline. Figures draw when their page is shown.
-  sections = new Map(CHAPTERS.map(([id]) => [id, renderers[id]()]));
+  // A chapter whose data the exports don't hold is left out, and so is one that fails anyway, so one
+  // chapter's bug can't blank the whole site. Pages keep only the chapters that were built.
+  sections = new Map();
+  for (const [id] of CHAPTERS) {
+    if (!CHAPTER_NEEDS[id]()) continue;
+    try {
+      sections.set(id, renderers[id]());
+    } catch (err) {
+      console.error(`Left out the ${id} chapter: ${err.stack}`);
+    }
+  }
+  for (const page of PAGES) page.chapters = page.chapters.filter((id) => sections.has(id));
+  PAGES.splice(0, PAGES.length, ...PAGES.filter((page) => page.chapters.length));
   setupControls();
   showPage({ scroll: false });
   const openLinkedDay = () => {

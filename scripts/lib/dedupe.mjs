@@ -3,9 +3,13 @@
 const MIN = 60e3;
 const HOUR = 3600e3;
 
-// Higher wins when merged records disagree: the Garmin file is the original recording,
+// Higher wins when merged records disagree: a watch's own file is the original recording, an app like
 // Strava mostly re-hosts it, and Fitbit's copies are lossy.
-const PRIORITY = { garmin: 3, strava: 2, fitbit: 1 };
+const PRIORITY = { garmin: 3, coros: 3, strava: 2, fitbit: 1 };
+// Sources whose activity files are the watch's original recording, and apps that re-host them.
+const RECORDINGS = new Set(['garmin', 'coros']);
+const APPS = new Set(['strava']);
+export const sourcePriority = (id) => PRIORITY[id] ?? 0;
 
 // ---------- activity types ----------
 
@@ -106,33 +110,33 @@ export function clusterActivities(records) {
 
 // Which recording to trust for distance and time when the apps disagree.
 export function pickDistanceRecord(ordered, type) {
-  const measured = ordered.filter((r) => r.km != null && r.source !== 'fitbit');
+  const measured = ordered.filter((r) => r.km != null && sourcePriority(r.source) > PRIORITY.fitbit);
   if (measured.length < 2) return ordered.find((r) => r.km != null) || ordered[0];
-  const garmin = measured.filter((r) => r.source === 'garmin');
-  const strava = measured.find((r) => r.source === 'strava');
-  if (!garmin.length || !strava) return measured[0];
-  const best = garmin.reduce((a, b) => ((b.timerMin || 0) > (a.timerMin || 0) ? b : a));
+  const watch = measured.filter((r) => RECORDINGS.has(r.source));
+  const app = measured.find((r) => APPS.has(r.source));
+  if (!watch.length || !app) return measured[0];
+  const best = watch.reduce((a, b) => ((b.timerMin || 0) > (a.timerMin || 0) ? b : a));
   // A session relabeled on Strava (a treadmill run that was really the elliptical) follows Strava.
-  if (garmin.every((g) => g.type !== type) && strava.type === type) return strava;
+  if (watch.every((g) => g.type !== type) && app.type === type) return app;
   // Treadmill distance is corrected on the watch at the end, and Strava re-derives its own.
   if (ordered.some((r) => r.indoor)) return best;
-  if (Math.abs(best.km - strava.km) <= 0.3) return best;
+  if (Math.abs(best.km - app.km) <= 0.3) return best;
   // Outdoors, a real disagreement means Strava holds a stitched, uploaded or edited version:
   // usually a longer one after the watch stopped early, or a corrected race distance.
-  return strava;
+  return app;
 }
 
 export function mergeCluster(cluster) {
-  const ordered = [...cluster].sort((a, b) => PRIORITY[b.source] - PRIORITY[a.source]);
+  const ordered = [...cluster].sort((a, b) => sourcePriority(b.source) - sourcePriority(a.source));
   const first = (key) => ordered.map((r) => r[key]).find((v) => v != null && v !== '');
   const merged = { ...ordered[0] };
   for (const key of ['offset', 'timerMin', 'km', 'avgHr', 'maxHr', 'calories', 'gainM', 'steps', 'name', 'gear', 'effort', 'file', 'place']) {
     merged[key] = first(key) ?? null;
   }
   // Strava names are user-written ("Canoe trip day 2"); Garmin's are generated ("New York Running").
-  merged.name = ordered.find((r) => r.source === 'strava')?.name || merged.name;
+  merged.name = ordered.find((r) => APPS.has(r.source))?.name || merged.name;
   // Strava's type is what you chose or corrected, and a Garmin "other" often has a real type there.
-  const stravaType = ordered.find((r) => r.source === 'strava')?.type;
+  const stravaType = ordered.find((r) => APPS.has(r.source))?.type;
   merged.type = (stravaType && stravaType !== 'Other' ? stravaType : null) || ordered.map((r) => r.type).find((t) => t && t !== 'Other') || 'Other';
   const distanceRecord = pickDistanceRecord(ordered, merged.type);
   merged.km = distanceRecord.km ?? merged.km;
@@ -180,5 +184,10 @@ export function mergeCycles(lists, toleranceDays = 3) {
 
 // ---------- handover between watches ----------
 
-// Each calendar day comes from exactly one watch, so nothing is double counted at the switch.
-export const dayOwner = (date, handover) => (date < handover ? 'fitbit' : 'garmin');
+// Each calendar day comes from exactly one watch, so nothing is double counted at a switch. `eras` lists the
+// watches in the order they were worn, each as { from, source }: a watch owns the days from its first full
+// day until the next one's, and the first also owns everything before it.
+export function dayOwner(date, eras) {
+  for (let i = eras.length - 1; i > 0; i--) if (date >= eras[i].from) return eras[i].source;
+  return eras[0]?.source ?? null;
+}

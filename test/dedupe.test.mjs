@@ -139,8 +139,12 @@ test('cycles from two apps within a few days are one cycle, and a confirmed reco
 });
 
 test('every day has exactly one owning watch', () => {
-  assert.equal(dayOwner('2022-06-03', '2022-06-04'), 'fitbit');
-  assert.equal(dayOwner('2022-06-04', '2022-06-04'), 'garmin');
+  const eras = [{ from: '2019-11-29', source: 'fitbit' }, { from: '2022-06-04', source: 'garmin' }];
+  assert.equal(dayOwner('2018-01-01', eras), 'fitbit');
+  assert.equal(dayOwner('2022-06-03', eras), 'fitbit');
+  assert.equal(dayOwner('2022-06-04', eras), 'garmin');
+  assert.equal(dayOwner('2022-06-04', [{ from: '2022-06-04', source: 'garmin' }]), 'garmin');
+  assert.equal(dayOwner('2020-01-01', [{ from: '2022-06-04', source: 'garmin' }]), 'garmin');
 });
 
 test('activity types from all three exports normalize together', () => {
