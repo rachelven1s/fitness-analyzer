@@ -269,7 +269,11 @@ function periodStats({ from, to }) {
   const runs = data.workouts.filter((w) => w.type === 'Run' && w.d >= from && w.d <= to);
   // Heart rate on runs while sick or recovering would skew pace and fitness figures; distance still counts.
   const segs = runs.filter((r) => r.seg && !isSick(r.d)).map((r) => r.seg);
-  const weeks = days.length / 7 || 1;
+  // Calendar weeks the tracker covered, not days with a daily summary: an export can be missing summaries for
+  // days whose runs it still has, which would inflate anything per week.
+  const lo = from > data.meta.trackerStart ? from : data.meta.trackerStart;
+  const hi = to < data.meta.trackerEnd ? to : data.meta.trackerEnd;
+  const weeks = Math.max(daysBetween(lo, hi) + 1, 0) / 7 || 1;
   const nums = (get) => days.map(get).filter((v) => v != null);
   const avg = (get) => mean(nums(get));
   const sum = (list, get) => list.reduce((s, x) => s + (get(x) || 0), 0);
@@ -382,14 +386,34 @@ function sparkline(values, t) {
     svg('circle', { cx: x(lastI), cy: y(lastV), r: 3, fill: t.series[0] }));
 }
 
+// A year stands for itself in year-by-year comparisons only with enough of it on the watch: a watch that arrives
+// in late October would otherwise shrink "the same dates each year" to a few weeks, or set a year of 17 runs
+// beside years of a hundred.
+const MIN_YEAR_DAYS = 90;
+const MIN_YEAR_RUNS = 20;
+const daysBetween = (a, b) => (dayMs(b) - dayMs(a)) / DAY;
+// Which way a change went: -1, 0 or 1, counting anything smaller than `steady` as no change, so a headline
+// reads right for anyone's record and not only when the numbers moved the way they did for the first owner.
+const direction = (change, steady) => (change == null || Math.abs(change) < steady ? 0 : Math.sign(change));
+const pick = (way, { down, same, up }) => (way < 0 ? down : way > 0 ? up : same);
+// Days of a calendar year (as 'YYYY') the main watch recorded.
+const yearCovered = (y) => daysBetween(
+  y === handover().slice(0, 4) ? handover() : `${y}-01-01`,
+  y === data.meta.trackerEnd.slice(0, 4) ? data.meta.trackerEnd : `${y}-12-31`,
+);
+
 function comparePeriods() {
   const end = data.meta.trackerEnd;
-  const startMd = handover().slice(5);
   const endMd = end.slice(5);
   const first = +handover().slice(0, 4);
   const last = +end.slice(0, 4);
   const years = [];
   for (let y = first; y <= last; y++) years.push(y);
+  // When the first year's share of the same dates is too short, it is left out and the window starts on Jan 1,
+  // which makes it the same as the Jan 1 window.
+  const dropFirst = years.length >= 3 && daysBetween(handover(), `${first}-${endMd}`) < MIN_YEAR_DAYS;
+  const startMd = dropFirst ? '01-01' : handover().slice(5);
+  const sameYears = dropFirst ? years.slice(1) : years;
   const fitbitStart = data.meta.trackerStart;
   const allYears = [];
   for (let y = +fitbitStart.slice(0, 4); y <= last; y++) allYears.push(y);
@@ -399,8 +423,10 @@ function comparePeriods() {
     same: {
       button: `${label(startMd)} to ${label(endMd)}`,
       title: `${label(startMd)} to ${label(endMd)} of each year`,
-      note: `The dates all ${years.length} Garmin years share, so seasons even out.`,
-      periods: years.map((y) => ({ label: String(y), from: `${y}-${startMd}`, to: `${y}-${endMd}` })),
+      note: dropFirst
+        ? `The dates the last ${sameYears.length} Garmin years share, so seasons even out. ${first} is left out: the watch arrived ${fmtDay(handover())}.`
+        : `The dates all ${years.length} Garmin years share, so seasons even out.`,
+      periods: sameYears.map((y) => ({ label: String(y), from: `${y}-${startMd}`, to: `${y}-${endMd}` })),
     },
     full: {
       button: 'Whole calendar years',
@@ -409,24 +435,29 @@ function comparePeriods() {
       note: `${first} and ${last} are partial (*), so their totals show no change.`,
       periods: years.map((y) => ({ label: y === first || y === last ? `${y}*` : String(y), from: y === first ? handover() : `${y}-01-01`, to: y === last ? end : `${y}-12-31` })),
     },
-    ytd: {
-      button: `Jan 1 to ${label(endMd)}`,
-      title: `Jan 1 to ${label(endMd)} of each year`,
-      note: `${first} is left out: the watch arrived in June.`,
-      periods: years.slice(1).map((y) => ({ label: String(y), from: `${y}-01-01`, to: `${y}-${endMd}` })),
-    },
-    both: {
-      button: `Both watches, ${allYears[0]} to ${last}`,
-      title: 'whole calendar years on both watches',
-      partial: true,
-      crossDevice: true,
-      note: `Fitbit until ${fmtDay(handover())}, Garmin after. Rows marked † are measured differently by each watch, so they show no change.`,
-      periods: allYears.map((y) => ({
-        label: y === allYears[0] || y === last ? `${y}*` : String(y),
-        from: y === allYears[0] ? fitbitStart : `${y}-01-01`,
-        to: y === last ? end : `${y}-12-31`,
-      })),
-    },
+    ...(dropFirst ? {} : {
+      ytd: {
+        button: `Jan 1 to ${label(endMd)}`,
+        title: `Jan 1 to ${label(endMd)} of each year`,
+        note: `${first} is left out: the watch arrived ${fmtDay(handover())}.`,
+        periods: years.slice(1).map((y) => ({ label: String(y), from: `${y}-01-01`, to: `${y}-${endMd}` })),
+      },
+    }),
+    // With one watch there's nothing to span: this would repeat the whole calendar years.
+    ...(earlierWatch() ? {
+      both: {
+        button: `Both watches, ${allYears[0]} to ${last}`,
+        title: 'whole calendar years on both watches',
+        partial: true,
+        crossDevice: true,
+        note: `${earlierWatch().label} until ${fmtDay(handover())}, ${watchName()} after. Rows marked † are measured differently by each watch, so they show no change.`,
+        periods: allYears.map((y) => ({
+          label: y === allYears[0] || y === last ? `${y}*` : String(y),
+          from: y === allYears[0] ? fitbitStart : `${y}-01-01`,
+          to: y === last ? end : `${y}-12-31`,
+        })),
+      },
+    } : {}),
   };
 }
 
@@ -469,7 +500,7 @@ function monthlyOverlay({ title, sub, agg, fmt, isPrivate, yFmt }) {
 
 function renderCompare() {
   const presets = comparePeriods();
-  let active = 'same';
+  let active = 'full';
   let showAll = false;
   // Rows whose monthly chart is open stay open when the window changes.
   const openCharts = new Set();
@@ -485,7 +516,9 @@ function renderCompare() {
   const scoreHost = el('div', { class: 'table-scroll' });
   const noteEl = el('div', { class: 'fig-sub' });
   const allToggle = el('button', { type: 'button', class: 'link-button score-more', onclick: () => { showAll = !showAll; drawScore(); } });
-  const buttons = Object.entries(presets).map(([key, preset]) => el('button', {
+  // Whole calendar years open first, so their button leads.
+  const { full, ...rest } = presets;
+  const buttons = Object.entries({ full, ...rest }).map(([key, preset]) => el('button', {
     type: 'button',
     text: preset.button,
     'aria-pressed': key === active ? 'true' : 'false',
@@ -564,7 +597,13 @@ function renderCompare() {
   const doyTicks = MONTH_NAMES.map((name, m) => ({ v: Math.round((Date.UTC(2023, m, 1) - Date.UTC(2023, 0, 1)) / DAY) + 1, label: name })).filter((_, m) => m % 2 === 0);
 
   return chapter('compare', '1 · Year over year',
-    `${firstLabel} to ${lastLabel}: ${moreRunning}% more running, a resting heart rate ${fmt1(a.rhr - b.rhr)} bpm lower, and ${fmtDuration(b.asleep - a.asleep)} more sleep a night`,
+    `${firstLabel} to ${lastLabel}: ${pick(direction(moreRunning, 1), {
+      down: `${Math.abs(moreRunning)}% less running`, same: 'the same amount of running', up: `${moreRunning}% more running`,
+    })}, ${pick(direction(b.rhr - a.rhr, 0.5), {
+      down: `a resting heart rate ${fmt1(a.rhr - b.rhr)} bpm lower`, same: 'the same resting heart rate', up: `a resting heart rate ${fmt1(b.rhr - a.rhr)} bpm higher`,
+    })}, and ${pick(direction(b.asleep - a.asleep, 5), {
+      down: `${fmtDuration(a.asleep - b.asleep)} less sleep a night`, same: 'about the same sleep a night', up: `${fmtDuration(b.asleep - a.asleep)} more sleep a night`,
+    })}`,
     `Comparing the same ${presets.same.button} dates each year, all on one watch.`,
     el('div', { class: 'seg', role: 'group', 'aria-label': 'Comparison window' }, buttons),
     figure({
@@ -741,14 +780,29 @@ function renderHeart() {
   const vo2g = rolling(vo2Dates, (r) => r.vo2g, 56, 5);
   const vo2Pts = vo2Dates.map((d, i) => ({ x: dayMs(d), y: vo2g[i] }));
   const validG = vo2Pts.filter((p) => p.y != null);
-  const years = data.hourYear.filter((y) => +y.year >= +handover().slice(0, 4)).slice(-5);
+  const years = data.hourYear.filter((y) => +y.year >= +handover().slice(0, 4) && yearCovered(y.year) >= MIN_YEAR_DAYS).slice(-5);
   const heartPeriods = comparePeriods().same.periods;
   const heartA = periodStats(heartPeriods[0]);
   const heartB = periodStats(heartPeriods.at(-1));
 
+  const [fromLabel, toLabel] = [heartPeriods[0].label, heartPeriods.at(-1).label];
+  const rhrWay = direction(heartB.rhr - heartA.rhr, 0.5);
+  const nightWay = direction(heartB.overnight - heartA.overnight, 0.5);
+  const vo2Way = direction(heartB.vo2 - heartA.vo2, 0.3);
+  const moved = (way) => (way < 0 ? 'fell' : 'rose');
+  const nightSentence = rhrWay && nightWay === rhrWay
+    ? `Your raw 3 to 5 AM heart rate ${moved(nightWay)} too, so it isn't just ${watchName()}'s formula.`
+    : rhrWay
+      ? `Your raw 3 to 5 AM heart rate ${nightWay ? moved(nightWay) : 'held steady'}, so part of the change may be ${watchName()}'s formula.`
+      : `Your raw 3 to 5 AM heart rate ${nightWay ? `${moved(nightWay)} by ${fmt1(Math.abs(heartB.overnight - heartA.overnight))} bpm` : 'held steady too'}.`;
+  const vo2Sentence = heartA.vo2 == null || heartB.vo2 == null ? ''
+    : vo2Way ? ` VO₂ max ${moved(vo2Way)} from ${fmt1(heartA.vo2)} to ${fmt1(heartB.vo2)}.` : ` VO₂ max held at about ${fmt1(heartB.vo2)}.`;
+
   return chapter('heart', '4 · Heart',
-    `Your resting heart rate fell from ${fmt1(heartA.rhr)} bpm in ${heartPeriods[0].label} to ${fmt1(heartB.rhr)} in ${heartPeriods.at(-1).label}`,
-    `Your raw 3 to 5 AM heart rate fell too, so it isn't just Garmin's formula. VO₂ max rose from ${fmt1(heartA.vo2)} to ${fmt1(heartB.vo2)}.`,
+    rhrWay
+      ? `Your resting heart rate ${moved(rhrWay)} from ${fmt1(heartA.rhr)} bpm in ${fromLabel} to ${fmt1(heartB.rhr)} in ${toLabel}`
+      : `Your resting heart rate held at about ${fmt1(heartB.rhr)} bpm from ${fromLabel} to ${toLabel}`,
+    nightSentence + vo2Sentence,
     howMeasured(`Same ${comparePeriods().same.button} dates each year. Heart rate at 3 to 5 AM went from ${fmt1(heartA.overnight)} to ${fmt1(heartB.overnight)} bpm. ${watches().at(-1).label}'s resting number typically reads about ${Math.abs(data.restingGap).toFixed(0)} bpm ${data.restingGap > 0 ? 'above' : 'below'} it.`),
     figure({
       title: 'Resting heart rate and 3 to 5 AM heart rate',
@@ -912,7 +966,9 @@ function beatData() {
     return { ...r, steadyKm: km, steadyMin: minutes, speed: km / (minutes / 60), hrSteady: beats / minutes, mpb: (km * 1000) / beats, adjusted: r.seg.adj };
   });
   const rollingMedian = (key) => runs.map((_, i) => (i >= 12 && i < runs.length - 12 ? median(runs.slice(i - 12, i + 13).map((r) => r[key])) : null));
-  const years = [...new Set(runs.map((r) => r.d.slice(0, 4)))];
+  // A first or last year with too few runs, or too little time on the watch, isn't compared with the others.
+  const years = [...new Set(runs.map((r) => r.d.slice(0, 4)))]
+    .filter((y) => runs.filter((r) => r.d.startsWith(y)).length >= MIN_YEAR_RUNS && yearCovered(y) >= MIN_YEAR_DAYS);
   const sum = (list, get) => list.reduce((s, r) => s + get(r), 0);
   const byYear = years.map((y) => {
     const list = runs.filter((r) => r.d.startsWith(y));
@@ -1904,7 +1960,15 @@ function renderSleep() {
   });
 
   return chapter('sleep', '7 · Sleep',
-    `You sleep ${fmtDuration(b.asleep - a.asleep)} more than in ${presets[0].label}, and go to bed ${fmtDuration(a.bed - b.bed)} earlier`,
+    `You sleep ${pick(direction(b.asleep - a.asleep, 5), {
+      down: `${fmtDuration(a.asleep - b.asleep)} less than in ${presets[0].label}`,
+      same: `about as much as in ${presets[0].label}`,
+      up: `${fmtDuration(b.asleep - a.asleep)} more than in ${presets[0].label}`,
+    })}${pick(direction(b.bed - a.bed, 5), {
+      down: `, and go to bed ${fmtDuration(a.bed - b.bed)} earlier`,
+      same: ', at about the same bedtime',
+      up: `, and go to bed ${fmtDuration(b.bed - a.bed)} later`,
+    })}`,
     `Over the last year: a median ${fmtDuration(nowAsleep)} a night, and 8 hours or more on ${Math.round((eightH / lastYearNights.length) * 100)}% of nights.`,
     howMeasured(`Same ${comparePeriods().same.button} dates each year: asleep ${fmtDuration(a.asleep)} → ${fmtDuration(b.asleep)}, bedtime ${fmtClockFrom18(a.bed)} → ${fmtClockFrom18(b.bed)}. Garmin counts very little wake time, so its "asleep" runs close to time in bed.`),
     tiles(
@@ -3000,6 +3064,17 @@ function setupControls() {
   document.getElementById('randomDay').addEventListener('click', randomDay);
   document.getElementById('dayDialog').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
 
+  if (people.length && !imported) {
+    const choices = [{ id: null, label: 'Mine' }, ...people];
+    privateBtn.parentNode.prepend(el('div', { class: 'seg person-toggle', role: 'group', 'aria-label': 'Whose data' },
+      choices.map((c) => el('button', {
+        type: 'button',
+        text: c.label,
+        'aria-pressed': String((person?.id ?? null) === c.id),
+        onclick: () => { if ((person?.id ?? null) !== c.id) choosePerson(c.id); },
+      }))));
+  }
+
   // Imported data stays in this browser until cleared; clearing goes back to the normal start screen.
   if (imported) {
     privateBtn.after(el('button', {
@@ -3018,6 +3093,31 @@ function setupControls() {
 // The hosted copy (npm run build:site) keeps the data in a folder named after the password's hash,
 // so the files can't be found without it. Locally the data stays in /generated.
 let dataDir = '/generated';
+// Other people whose exports are built locally (datasets.json), each in <dataDir>/people/<id>, and the one shown:
+// null for your own data. The hosted copy has only those named in SITE_PEOPLE.
+let people = [];
+let person = null;
+
+async function loadPeople() {
+  try {
+    const res = await fetch(`${dataDir}/people.json`);
+    // Unknown paths fall back to index.html, so anything but JSON means there's no list.
+    if (res.ok && (res.headers.get('Content-Type') || '').includes('json')) people = await res.json();
+  } catch {}
+  let saved = null;
+  try { saved = localStorage.getItem('person'); } catch {}
+  person = people.find((p) => p.id === saved) ?? null;
+  if (person) dataDir = `${dataDir}/people/${person.id}`;
+}
+
+// Switching rebuilds every chapter from the other person's data, so it reloads the page.
+function choosePerson(id) {
+  try {
+    if (id) localStorage.setItem('person', id);
+    else localStorage.removeItem('person');
+  } catch {}
+  location.reload();
+}
 
 const sha256 = async (text) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))]
   .map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -3169,6 +3269,7 @@ async function main() {
   }
   app.replaceChildren(el('p', { class: 'loading', text: 'Reading your data…' }));
   if (!imported) {
+    await loadPeople();
     try {
       const res = await fetch(`${dataDir}/summary.json`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

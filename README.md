@@ -15,7 +15,9 @@ Needs Node 18 or newer and has no dependencies. FIT and zip files are read by sm
 
 Expected layout: `data/Takeout/`, `data/garmin*/` and `data/strava*/`.
 
-**Someone else's Garmin data:** open `/?import` (or the link on the password screen of the hosted copy) and drop the `.zip` from Garmin's "Export Your Data". The same analysis runs in the browser (`public/js/import-worker.js`); the zip is never uploaded, and the result is kept in that browser's IndexedDB until "Clear imported data". Imports have no `events.json` or `exclusions.json`.
+**Other people's data, built locally:** put their export (the `.zip` as Garmin sent it, or unzipped) in a folder named like `sams-data/`, and list it in `datasets.json` (git-ignored; copy `datasets.example.json`). `npm run build:data` then builds each person into `public/generated/people/<id>/`, and a toggle in the top bar switches between them and your own data. `npm run build:site` leaves them out unless named, e.g. `SITE_PEOPLE=sam npm run build:site`.
+
+**Someone else's Garmin data, in their browser:** open `/?import` (or the link on the password screen of the hosted copy) and drop the `.zip` from Garmin's "Export Your Data". The same analysis runs in the browser (`public/js/import-worker.js`); the zip is never uploaded, and the result is kept in that browser's IndexedDB until "Clear imported data". Imports have no `events.json` or `exclusions.json`.
 
 Optional, both git-ignored: `events.json` marks life events on the charts, and `exclusions.json` lists days the watch wasn't worn or you were sick. Copy `events.example.json` and `exclusions.example.json` to start.
 

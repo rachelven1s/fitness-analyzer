@@ -54,10 +54,12 @@ export const fmtCompact = (v) => {
 export const fmtDuration = (min) => {
   if (min == null) return '—';
   const total = Math.round(min);
-  const h = Math.floor(total / 60);
-  const m = total - h * 60;
+  // A negative duration keeps its sign in front: -80 is "-1h 20m", not "-2h 40m".
+  const sign = total < 0 ? '-' : '';
+  const h = Math.floor(Math.abs(total) / 60);
+  const m = Math.abs(total) - h * 60;
   // A bare "44m" reads as metres next to distances, so minutes alone are spelled out.
-  return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m} min`;
+  return sign + (h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m} min`);
 };
 // Minutes after 18:00 → clock time
 export const fmtClockFrom18 = (m) => {

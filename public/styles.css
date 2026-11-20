@@ -476,3 +476,10 @@ dialog#dayDialog::backdrop { background: rgba(0, 0, 0, 0.5); }
 .import-progress { width: 100%; height: 8px; accent-color: var(--accent); }
 .import .import-status:empty, .import .lock-error:empty { display: none; }
 .import .import-note { font-size: 13px; color: var(--muted); }
+
+/* Whose data is shown, when datasets.json lists other people. */
+.controls .person-toggle { margin: 0 6px 0 0; flex-wrap: nowrap; gap: 0; }
+.controls .person-toggle button { border-radius: 0; margin-left: -1px; }
+.controls .person-toggle button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.controls .person-toggle button:last-child { border-radius: 0 6px 6px 0; }
+.controls .person-toggle button[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: #fff; }
